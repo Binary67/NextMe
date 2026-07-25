@@ -4,12 +4,18 @@ import logging
 import pytest
 from pypdf import PdfWriter
 
-from graphtool.ingestion import pdf
-from graphtool.ingestion.pdf import (
+from graphtool.ingestion import (
+    pdf,
+    pdf_cache,
+    pdf_conversion,
+    pdf_pages,
+    pdf_prompts,
+)
+from graphtool.ingestion.pdf import convert_pdf_to_markdown
+from graphtool.ingestion.pdf_conversion import (
     ConvertedPdfPage,
     PdfBatchConversion,
     PdfPageConversion,
-    convert_pdf_to_markdown,
 )
 from graphtool.llm.types import LLMImageContent, LLMTextContent
 from graphtool.run_logging import LOGGER_NAME
@@ -41,7 +47,7 @@ def _conversion(*pages, ending_heading_path=None):
 
 
 def _prepare(monkeypatch, page_texts):
-    monkeypatch.setattr(pdf, "_extract_page_texts", lambda path, source: page_texts)
+    monkeypatch.setattr(pdf, "extract_page_texts", lambda path, source: page_texts)
     monkeypatch.setattr(pdf.shutil, "which", lambda name: "/usr/bin/pdftoppm")
     render_calls = []
 
@@ -49,7 +55,7 @@ def _prepare(monkeypatch, page_texts):
         render_calls.append(list(page_numbers))
         return [f"page-{number}".encode() for number in page_numbers]
 
-    monkeypatch.setattr(pdf, "_render_pages", fake_render)
+    monkeypatch.setattr(pdf, "render_pages", fake_render)
     return render_calls
 
 
@@ -57,14 +63,15 @@ def test_convert_pdf_batches_pages_and_assembles_canonical_markdown(
     monkeypatch,
     tmp_path,
 ):
-    original_assemble_markdown = pdf._assemble_markdown
+    original_assemble_markdown = pdf_conversion.assemble_markdown
     assembled_page_counts = []
 
     def track_assembled_pages(pages):
         assembled_page_counts.append(len(pages))
         return original_assemble_markdown(pages)
 
-    monkeypatch.setattr(pdf, "_assemble_markdown", track_assembled_pages)
+    monkeypatch.setattr(pdf_conversion, "assemble_markdown", track_assembled_pages)
+    monkeypatch.setattr(pdf, "assemble_markdown", track_assembled_pages)
     render_calls = _prepare(monkeypatch, ["First text", "Second text", "Third text"])
     path = tmp_path / "manual.pdf"
     path.write_bytes(b"pdf")
@@ -106,13 +113,13 @@ def test_convert_pdf_batches_pages_and_assembles_canonical_markdown(
         "<!-- graphtool:page=2 -->\n\n## Setup\nSecond.\n"
     )
     assert second_context.endswith(
-        first_batch_markdown[-pdf.PDF_CONTEXT_TAIL_CHARS :]
+        first_batch_markdown[-pdf_conversion.PDF_CONTEXT_TAIL_CHARS :]
     )
 
 
 def test_convert_pdf_keeps_exact_bounded_context_tail(monkeypatch, tmp_path):
-    monkeypatch.setattr(pdf, "PDF_BATCH_MAX_PAGES", 1)
-    monkeypatch.setattr(pdf, "PDF_CONTEXT_TAIL_CHARS", 40)
+    monkeypatch.setattr(pdf_pages, "PDF_BATCH_MAX_PAGES", 1)
+    monkeypatch.setattr(pdf_conversion, "PDF_CONTEXT_TAIL_CHARS", 40)
     _prepare(monkeypatch, ["One", "Two", "Three"])
     path = tmp_path / "manual.pdf"
     path.write_bytes(b"pdf")
@@ -144,9 +151,9 @@ def test_convert_pdf_keeps_exact_bounded_context_tail(monkeypatch, tmp_path):
         context_prefix,
         maxsplit=1,
     )[1]
-    assert second_context == pdf._assemble_markdown(pages[:1])[-40:]
-    assert third_context == pdf._assemble_markdown(pages[:2])[-40:]
-    assert markdown == pdf._assemble_markdown(pages)
+    assert second_context == pdf.assemble_markdown(pages[:1])[-40:]
+    assert third_context == pdf.assemble_markdown(pages[:2])[-40:]
+    assert markdown == pdf.assemble_markdown(pages)
 
 
 def test_convert_pdf_uses_complete_cache_without_rendering_or_llm(
@@ -171,7 +178,7 @@ def test_convert_pdf_uses_complete_cache_without_rendering_or_llm(
     )
     monkeypatch.setattr(
         pdf,
-        "_extract_page_texts",
+        "extract_page_texts",
         lambda path, source: pytest.fail("completed cache parsed the PDF"),
     )
     monkeypatch.setattr(
@@ -235,7 +242,7 @@ def test_convert_pdf_resumes_validated_batches_after_failure(monkeypatch, tmp_pa
         "<!-- graphtool:page=2 -->\n\nTwo.\n"
     )
     assert resumed_context.endswith(
-        cached_markdown[-pdf.PDF_CONTEXT_TAIL_CHARS :]
+        cached_markdown[-pdf_conversion.PDF_CONTEXT_TAIL_CHARS :]
     )
     assert "Three." in markdown
 
@@ -442,7 +449,7 @@ def test_validate_conversion_rejects_empty_unmarked_page():
         ValueError,
         match="empty Markdown without marking the page blank",
     ):
-        pdf._validate_conversion(
+        pdf_conversion.validate_conversion(
             _conversion((1, "")),
             [1],
             "documents/manual.pdf",
@@ -450,9 +457,9 @@ def test_validate_conversion_rejects_empty_unmarked_page():
 
 
 def test_pdf_prompt_defines_template_only_pages_as_blank():
-    assert "confidentiality labels" in pdf._SYSTEM_PROMPT
-    assert "set is_blank to true and return empty Markdown" in pdf._SYSTEM_PROMPT
-    assert "still return one page record for every requested page" in pdf._SYSTEM_PROMPT
+    assert "confidentiality labels" in pdf_prompts.BATCH_SYSTEM_PROMPT
+    assert "set is_blank to true and return empty Markdown" in pdf_prompts.BATCH_SYSTEM_PROMPT
+    assert "still return one page record for every requested page" in pdf_prompts.BATCH_SYSTEM_PROMPT
 
 
 def test_convert_pdf_invalidates_cache_when_prompt_revision_changes(
@@ -469,7 +476,11 @@ def test_convert_pdf_invalidates_cache_when_prompt_revision_changes(
         FakeLLM([_conversion((1, "First."))]),
         cache_dir,
     )
-    monkeypatch.setattr(pdf, "PDF_PROMPT_REVISION", pdf.PDF_PROMPT_REVISION + 1)
+    monkeypatch.setattr(
+        pdf_cache,
+        "PDF_PROMPT_REVISION",
+        pdf_cache.PDF_PROMPT_REVISION + 1,
+    )
 
     markdown = convert_pdf_to_markdown(
         path,
@@ -483,7 +494,7 @@ def test_convert_pdf_invalidates_cache_when_prompt_revision_changes(
 
 
 def test_convert_pdf_fails_clearly_without_poppler(monkeypatch, tmp_path):
-    monkeypatch.setattr(pdf, "_extract_page_texts", lambda path, source: ["Text"])
+    monkeypatch.setattr(pdf, "extract_page_texts", lambda path, source: ["Text"])
     monkeypatch.setattr(pdf.shutil, "which", lambda name: None)
     path = tmp_path / "manual.pdf"
     path.write_bytes(b"pdf")
@@ -555,7 +566,7 @@ def test_completed_cache_manifest_records_fast_model_and_markdown_hash(
 def test_make_page_batches_respects_page_and_extracted_text_limits():
     page_texts = ["a", "b", "x" * 16_000, "c"]
 
-    batches = pdf._make_page_batches(page_texts)
+    batches = pdf_pages.make_page_batches(page_texts)
 
     assert [[page_number for page_number, _ in batch] for batch in batches] == [
         [1, 2],
@@ -577,13 +588,13 @@ def test_render_pages_uses_poppler_and_removes_temporary_images(
         first_page = int(command[command.index("-f") + 1])
         last_page = int(command[command.index("-l") + 1])
         for page_number in range(first_page, last_page + 1):
-            image_path = pdf.Path(f"{prefix}-{page_number}.png")
+            image_path = pdf_pages.Path(f"{prefix}-{page_number}.png")
             temporary_paths.append(image_path)
             image_path.write_bytes(f"image-{page_number}".encode())
 
-    monkeypatch.setattr(pdf.subprocess, "run", fake_run)
+    monkeypatch.setattr(pdf_pages.subprocess, "run", fake_run)
 
-    images = pdf._render_pages(
+    images = pdf_pages.render_pages(
         tmp_path / "manual.pdf",
         [3, 4],
         "/usr/bin/pdftoppm",
