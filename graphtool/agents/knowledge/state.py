@@ -25,10 +25,7 @@ class ExpandRecommendation(BaseModel):
     chunk_id: str = Field(min_length=1, pattern=r"\S")
 
 
-RetrievalRecommendation = Annotated[
-    SearchRecommendation | ExpandRecommendation,
-    Field(discriminator="action"),
-]
+RetrievalRecommendation = SearchRecommendation | ExpandRecommendation
 
 
 class SufficiencyDecision(BaseModel):
