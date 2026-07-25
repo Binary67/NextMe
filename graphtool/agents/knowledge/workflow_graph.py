@@ -33,6 +33,7 @@ from graphtool.agents.knowledge.state import (
     AgentChunkReference,
     AgentState,
     ConversationSummary,
+    DocumentEvidenceRecord,
     EvidenceRecord,
     FinalAnswerDraft,
     GraphPathEvidenceRecord,
@@ -42,6 +43,7 @@ from graphtool.agents.knowledge.state import (
 )
 from graphtool.agents.knowledge.tools import (
     ChunkNeighborhoodArtifact,
+    DocumentSearchArtifact,
     KnowledgeSearchArtifact,
     ToolErrorArtifact,
     create_knowledge_tools,
@@ -329,8 +331,10 @@ def build_workflow_graph(
 
     def record_tool_results(state: AgentState) -> dict:
         evidence = list(state["evidence"])
+        document_evidence = list(state["document_evidence"])
         graph_path_evidence = list(state["graph_path_evidence"])
         references = list(state["references"])
+        allowed_sources = list(state["allowed_sources"])
         allowed_chunks = list(state["allowed_chunks"])
         used_neighborhoods = list(state["used_neighborhoods"])
         search_count = state["search_count"]
@@ -343,7 +347,34 @@ def build_workflow_graph(
         for message in tool_messages:
             artifact = _tool_artifact(message)
             retrieval_count += 1
-            if isinstance(artifact, KnowledgeSearchArtifact):
+            if isinstance(artifact, DocumentSearchArtifact):
+                retrieval_queries.append(
+                    f"Document search: {artifact.query}"
+                )
+                for document in artifact.documents:
+                    references, reference_ids = merge_references(
+                        references,
+                        [SourceReference(source=document.source)],
+                    )
+                    document_evidence, is_new = _merge_document_evidence_record(
+                        document_evidence,
+                        DocumentEvidenceRecord(
+                            query=artifact.query,
+                            source=document.source,
+                            title=document.title,
+                            headings=document.headings,
+                            reference_ids=reference_ids,
+                            subquestion_indexes=[state["subquestion_index"]],
+                        ),
+                        state["subquestion_index"],
+                    )
+                    if is_new:
+                        new_evidence_count += 1
+                    else:
+                        duplicate_evidence_count += 1
+                    if document.source not in allowed_sources:
+                        allowed_sources.append(document.source)
+            elif isinstance(artifact, KnowledgeSearchArtifact):
                 retrieval_queries.append(artifact.query)
                 allowed_chunks = _merge_allowed_chunks(
                     allowed_chunks,
@@ -457,8 +488,10 @@ def build_workflow_graph(
                 if message.id is not None
             ],
             "evidence": evidence,
+            "document_evidence": document_evidence,
             "graph_path_evidence": graph_path_evidence,
             "references": references,
+            "allowed_sources": allowed_sources,
             "allowed_chunks": allowed_chunks,
             "used_neighborhoods": used_neighborhoods,
             "search_count": search_count,
@@ -660,6 +693,7 @@ def build_workflow_graph(
             "subquestion_index": 0,
             "subquestion_outcomes": [],
             "evidence": [],
+            "document_evidence": [],
             "graph_path_evidence": [],
             "references": [],
             "search_count": 0,
@@ -668,6 +702,7 @@ def build_workflow_graph(
             "new_evidence_count": 0,
             "duplicate_evidence_count": 0,
             "previous_missing_information": "",
+            "allowed_sources": [],
             "allowed_chunks": [],
             "used_neighborhoods": [],
             "research_action": None,
@@ -784,6 +819,9 @@ def _log_tool_selection(tool_call: dict) -> None:
         return
     if name == "search_knowledge_base":
         RUN_LOGGER.info("Search query: %s", arguments.get("query", ""))
+        RUN_LOGGER.info("Search sources: %s", arguments.get("sources") or "all")
+    elif name == "find_documents":
+        RUN_LOGGER.info("Document query: %s", arguments.get("query", ""))
     elif name == "get_chunk_neighborhood":
         RUN_LOGGER.info(
             "Chunk neighborhood: %s :: %s",
@@ -855,16 +893,29 @@ def _tool_exchange_messages(messages, tool_messages: list[ToolMessage]):
 
 def _tool_artifact(
     message: ToolMessage,
-) -> KnowledgeSearchArtifact | ChunkNeighborhoodArtifact | ToolErrorArtifact | None:
+) -> (
+    DocumentSearchArtifact
+    | KnowledgeSearchArtifact
+    | ChunkNeighborhoodArtifact
+    | ToolErrorArtifact
+    | None
+):
     artifact = message.artifact
     if isinstance(
         artifact,
-        (KnowledgeSearchArtifact, ChunkNeighborhoodArtifact, ToolErrorArtifact),
+        (
+            DocumentSearchArtifact,
+            KnowledgeSearchArtifact,
+            ChunkNeighborhoodArtifact,
+            ToolErrorArtifact,
+        ),
     ):
         return artifact
     if not isinstance(artifact, dict):
         return None
     artifact_type = artifact.get("type")
+    if artifact_type == "document_search":
+        return DocumentSearchArtifact.model_validate(artifact)
     if artifact_type == "search":
         return KnowledgeSearchArtifact.model_validate(artifact)
     if artifact_type == "chunk_neighborhood":
@@ -897,6 +948,32 @@ def _merge_evidence_record(
     key = _chunk_key(incoming.source, incoming.chunk_id)
     for index, record in enumerate(merged):
         if _chunk_key(record.source, record.chunk_id) != key:
+            continue
+        if subquestion_index not in record.subquestion_indexes:
+            merged[index] = record.model_copy(
+                update={
+                    "subquestion_indexes": [
+                        *record.subquestion_indexes,
+                        subquestion_index,
+                    ]
+                }
+            )
+        return merged, False
+    merged.append(incoming)
+    return merged, True
+
+
+def _merge_document_evidence_record(
+    existing: list[DocumentEvidenceRecord],
+    incoming: DocumentEvidenceRecord,
+    subquestion_index: int,
+) -> tuple[list[DocumentEvidenceRecord], bool]:
+    merged = list(existing)
+    for index, record in enumerate(merged):
+        if (
+            record.source != incoming.source
+            or record.query.casefold() != incoming.query.casefold()
+        ):
             continue
         if subquestion_index not in record.subquestion_indexes:
             merged[index] = record.model_copy(
@@ -959,6 +1036,9 @@ def _has_current_evidence(state: AgentState) -> bool:
     return any(
         subquestion_index in record.subquestion_indexes
         for record in state["evidence"]
+    ) or any(
+        subquestion_index in record.subquestion_indexes
+        for record in state["document_evidence"]
     )
 
 

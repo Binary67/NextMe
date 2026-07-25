@@ -26,6 +26,7 @@ def research_context(state: AgentState) -> str:
         f"Current subquestion: {_current_question(state)}\n"
         f"Knowledge scope: {state.get('knowledge_scope') or 'all'}\n"
         f"Prior retrieval queries: {state['retrieval_queries'] or ['None']}\n"
+        f"Available document sources: {state['allowed_sources'] or ['None']}\n"
         f"Available chunks: {available_chunks or ['None']}\n"
         f"Used neighborhoods: {state['used_neighborhoods'] or ['None']}\n"
         f"Unresolved information: {missing_information or '[Not evaluated yet]'}"
@@ -137,17 +138,23 @@ def _evidence_text(
         if subquestion_index is None
         or subquestion_index in record.subquestion_indexes
     ]
+    document_evidence = [
+        record
+        for record in state["document_evidence"]
+        if subquestion_index is None
+        or subquestion_index in record.subquestion_indexes
+    ]
     graph_paths = [
         record
         for record in state["graph_path_evidence"]
         if subquestion_index is None
         or subquestion_index in record.subquestion_indexes
     ]
-    if not evidence and not graph_paths:
+    if not evidence and not document_evidence and not graph_paths:
         return "[None]"
     used_reference_ids = {
         reference_id
-        for record in [*evidence, *graph_paths]
+        for record in [*document_evidence, *evidence, *graph_paths]
         for reference_id in record.reference_ids
     }
     references = "\n".join(
@@ -163,6 +170,17 @@ def _evidence_text(
         )
         for record in evidence
     )
+    documents = "\n".join(
+        (
+            f"- Search query: {record.query}\n"
+            f"  Available reference IDs: "
+            f"{record.reference_ids or ['None']}\n"
+            f"  Source: {record.source}\n"
+            f"  Title: {record.title}\n"
+            f"  Headings: {record.headings or ['None']}"
+        )
+        for record in document_evidence
+    )
     formatted_graph_paths = "\n".join(
         (
             f"- Search query: {record.query}\n"
@@ -175,6 +193,8 @@ def _evidence_text(
     )
     return (
         f"Reference registry:\n{references or '[None]'}\n\n"
+        "Matching documents (supports source identification, not claims about "
+        f"document contents):\n{documents or '[None]'}\n\n"
         f"Graph paths:\n{formatted_graph_paths or '[None]'}\n\n"
         f"{searches}"
     )

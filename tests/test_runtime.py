@@ -432,6 +432,10 @@ def test_search_scope_filters_chunks_and_graph_paths(monkeypatch, tmp_path):
 
     runtime.prepare_search()
     result = runtime.search("Shared Personal Secret", scope="work")
+    source_result = runtime.search(
+        "Shared Personal Secret",
+        sources=[work_source],
+    )
 
     assert result.chunks
     assert {hit.chunk.source for hit in result.chunks} == {work_source}
@@ -445,6 +449,130 @@ def test_search_scope_filters_chunks_and_graph_paths(monkeypatch, tmp_path):
         for path in result.graph_paths
         for edge in path.edges
     } <= {"work-edge"}
+    assert {hit.chunk.source for hit in source_result.chunks} == {work_source}
+    assert {
+        edge.id
+        for path in source_result.graph_paths
+        for edge in path.edges
+    } <= {"work-edge"}
+
+
+def test_find_documents_matches_filename_and_respects_scope(monkeypatch, tmp_path):
+    runtime = _runtime(monkeypatch, tmp_path)
+    work_source = "documents/work/phoenix-architecture.pdf"
+    personal_source = "documents/personal/phoenix-notes.md"
+    runtime.chunk_store.save(
+        work_source,
+        [
+            Chunk(
+                id="work-phoenix",
+                source=work_source,
+                index=0,
+                text="PostgreSQL stores application records.",
+                heading_path=["Storage"],
+            )
+        ],
+    )
+    runtime.chunk_store.save(
+        personal_source,
+        [
+            Chunk(
+                id="personal-phoenix",
+                source=personal_source,
+                index=0,
+                text="These are personal notes.",
+                heading_path=["Notes"],
+            )
+        ],
+    )
+    runtime.knowledge_base_store.replace_all(KnowledgeGraph(nodes=[], edges=[]))
+    runtime.knowledge_scopes = {"work": "documents/work"}
+    runtime.prepare_search()
+
+    result = runtime.find_documents("Phoenix Architecture", scope="work")
+
+    assert [document.source for document in result.documents] == [work_source]
+    assert result.documents[0].headings == ["Storage"]
+
+
+def test_find_documents_uses_chunk_relevance_for_topic_search(monkeypatch, tmp_path):
+    runtime = _runtime(monkeypatch, tmp_path)
+    migration_source = "documents/database-runbook.md"
+    handbook_source = "documents/employee-handbook.md"
+    runtime.chunk_store.save(
+        migration_source,
+        [
+            Chunk(
+                id="migration",
+                source=migration_source,
+                index=0,
+                text="Rotate credentials after migrating the database.",
+            )
+        ],
+    )
+    runtime.chunk_store.save(
+        handbook_source,
+        [
+            Chunk(
+                id="handbook",
+                source=handbook_source,
+                index=0,
+                text="Employees receive annual leave.",
+            )
+        ],
+    )
+    runtime.knowledge_base_store.replace_all(KnowledgeGraph(nodes=[], edges=[]))
+    runtime.prepare_search()
+
+    result = runtime.find_documents("rotate credentials")
+
+    assert result.documents[0].source == migration_source
+
+
+def test_search_filters_to_discovered_document_sources(monkeypatch, tmp_path):
+    runtime = _runtime(monkeypatch, tmp_path)
+    current_source = "documents/current-policy.md"
+    old_source = "documents/old-policy.md"
+    runtime.chunk_store.save(
+        current_source,
+        [
+            Chunk(
+                id="current-retention",
+                source=current_source,
+                index=0,
+                text="Records are retained for seven years.",
+            )
+        ],
+    )
+    runtime.chunk_store.save(
+        old_source,
+        [
+            Chunk(
+                id="old-retention",
+                source=old_source,
+                index=0,
+                text="Records are retained for three years.",
+            )
+        ],
+    )
+    runtime.knowledge_base_store.replace_all(KnowledgeGraph(nodes=[], edges=[]))
+    runtime.prepare_search()
+
+    result = runtime.search(
+        "record retention",
+        sources=[current_source],
+    )
+
+    assert [hit.chunk.source for hit in result.chunks] == [current_source]
+
+
+def test_search_rejects_unknown_document_source(monkeypatch, tmp_path):
+    runtime = _runtime(monkeypatch, tmp_path)
+    runtime.knowledge_base_store.replace_all(KnowledgeGraph(nodes=[], edges=[]))
+    runtime.prepare_search()
+
+    with pytest.raises(ValueError, match="Unknown document source"):
+        runtime.search("query", sources=["documents/missing.md"])
 
 
 def test_search_rejects_unknown_scope(monkeypatch, tmp_path):

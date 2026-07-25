@@ -19,7 +19,12 @@ from graphtool.agents.knowledge.state import (
 )
 from graphtool.chunking.types import Chunk
 from graphtool.graph.types import Edge, Node
-from graphtool.retrieval import RetrievalResult, SourceReference
+from graphtool.retrieval import (
+    DocumentHit,
+    DocumentSearchResult,
+    RetrievalResult,
+    SourceReference,
+)
 from graphtool.retrieval.types import ChunkHit, GraphPathHit
 
 
@@ -89,6 +94,7 @@ class FakeRuntime:
         results,
         *,
         neighborhoods=None,
+        document_results=None,
         knowledge_base_exists=True,
         knowledge_scopes=None,
     ):
@@ -98,17 +104,27 @@ class FakeRuntime:
             else MissingKnowledgeBaseStore()
         )
         self.results = list(results)
+        self.document_results = list(document_results or [])
+        self.document_calls = []
         self.search_calls = []
         self.search_scopes = []
+        self.search_sources = []
         self.knowledge_scopes = knowledge_scopes or {}
         self.chunk_store = FakeChunkStore(neighborhoods or {})
 
-    def search(self, query, *, scope=None):
+    def search(self, query, *, scope=None, sources=None):
         self.search_calls.append(query)
         self.search_scopes.append(scope)
+        self.search_sources.append(sources)
         if not self.results:
             raise AssertionError("No scripted retrieval result")
         return self.results.pop(0)
+
+    def find_documents(self, query, *, scope=None):
+        self.document_calls.append((query, scope))
+        if not self.document_results:
+            raise AssertionError("No scripted document result")
+        return self.document_results.pop(0)
 
 
 class FakeChunkStore:
@@ -179,8 +195,15 @@ def _tool_call(name, **arguments):
     )
 
 
-def _search_call(query):
-    return _tool_call("search_knowledge_base", query=query)
+def _search_call(query, sources=None):
+    arguments = {"query": query}
+    if sources is not None:
+        arguments["sources"] = sources
+    return _tool_call("search_knowledge_base", **arguments)
+
+
+def _document_call(query):
+    return _tool_call("find_documents", query=query)
 
 
 def _neighborhood_call(source, chunk_id):
@@ -193,6 +216,22 @@ def _neighborhood_call(source, chunk_id):
 
 def _direct_response(text):
     return AIMessage(content=text)
+
+
+def _document_result(query, *sources):
+    return DocumentSearchResult(
+        query=query,
+        documents=[
+            DocumentHit(
+                source=source,
+                title=source.rsplit("/", maxsplit=1)[-1].rsplit(".", maxsplit=1)[0],
+                headings=["Overview"],
+                chunk_count=2,
+                score=1.0,
+            )
+            for source in sources
+        ],
+    )
 
 
 def _chunk(chunk_id, index, page, text):
@@ -249,7 +288,16 @@ def test_research_tool_selection_is_logged_human_readably(monkeypatch):
     workflow_graph._log_tool_selection(
         {
             "name": "search_knowledge_base",
-            "args": {"query": "GraphTool authentication"},
+            "args": {
+                "query": "GraphTool authentication",
+                "sources": ["docs/guide.md"],
+            },
+        }
+    )
+    workflow_graph._log_tool_selection(
+        {
+            "name": "find_documents",
+            "args": {"query": "GraphTool guide"},
         }
     )
     workflow_graph._log_tool_selection(
@@ -262,6 +310,9 @@ def test_research_tool_selection_is_logged_human_readably(monkeypatch):
     assert calls == [
         ("Research selected: %s", "search_knowledge_base"),
         ("Search query: %s", "GraphTool authentication"),
+        ("Search sources: %s", ["docs/guide.md"]),
+        ("Research selected: %s", "find_documents"),
+        ("Document query: %s", "GraphTool guide"),
         ("Research selected: %s", "get_chunk_neighborhood"),
         ("Chunk neighborhood: %s :: %s", "guide.pdf", "guide-0013"),
     ]
@@ -441,6 +492,128 @@ def test_agent_searches_all_sources_when_no_scope_is_selected():
     agent.ask("What does GraphTool do?", thread_id="thread-1")
 
     assert runtime.search_scopes == [None]
+
+
+def test_agent_discovers_document_then_searches_only_that_source():
+    source = "documents/work/phoenix-architecture.pdf"
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _document_call("Phoenix Architecture"),
+                _search_call("database used", sources=[source]),
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(
+                    verdict="insufficient",
+                    missing_information="The document was found but its database is missing.",
+                ),
+                SufficiencyDecision(verdict="sufficient"),
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="Phoenix uses PostgreSQL.",
+                    cited_reference_ids=["S2"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [_result("database used", source=source)],
+        document_results=[_document_result("Phoenix Architecture", source)],
+    )
+    agent = create_knowledge_agent(model, model, runtime)
+
+    response = agent.ask(
+        "Which database is used in Phoenix Architecture?",
+        thread_id="thread-1",
+    )
+
+    assert response.status == "complete"
+    assert runtime.document_calls == [("Phoenix Architecture", None)]
+    assert runtime.search_calls == ["database used"]
+    assert runtime.search_sources == [[source]]
+    second_research_call = model.calls[ToolModelResponse][1]
+    assert f"Available document sources: ['{source}']" in str(
+        second_research_call[1].content
+    )
+
+
+def test_agent_answers_document_discovery_question_without_content_search():
+    source = "documents/work/database-runbook.md"
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [_document_call("database migration")],
+            SufficiencyDecision: [
+                SufficiencyDecision(verdict="sufficient")
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="The database runbook discusses migration.",
+                    cited_reference_ids=["S1"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [],
+        document_results=[_document_result("database migration", source)],
+    )
+    agent = create_knowledge_agent(model, model, runtime)
+
+    response = agent.ask(
+        "Which documents discuss database migration?",
+        thread_id="thread-1",
+    )
+
+    assert response.status == "complete"
+    assert response.search_count == 0
+    assert response.references == [SourceReference(source=source)]
+    assert runtime.search_calls == []
+
+
+def test_agent_rejects_source_not_returned_by_document_discovery():
+    allowed_source = "documents/work/phoenix.pdf"
+    unknown_source = "documents/private/secret.pdf"
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _document_call("Phoenix"),
+                _search_call("database", sources=[unknown_source]),
+                _search_call("database", sources=[allowed_source]),
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(
+                    verdict="insufficient",
+                    missing_information="The database details are missing.",
+                ),
+                SufficiencyDecision(
+                    verdict="insufficient",
+                    missing_information="No authorized passage was retrieved.",
+                ),
+                SufficiencyDecision(verdict="sufficient"),
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="Phoenix uses PostgreSQL.",
+                    cited_reference_ids=["S2"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [_result("database", source=allowed_source)],
+        document_results=[_document_result("Phoenix", allowed_source)],
+    )
+    agent = create_knowledge_agent(model, model, runtime)
+
+    response = agent.ask(
+        "Which database is used in Phoenix?",
+        thread_id="thread-1",
+    )
+
+    assert response.status == "complete"
+    assert runtime.search_calls == ["database"]
+    assert runtime.search_sources == [[allowed_source]]
 
 
 def test_agent_asks_for_clarification_for_unknown_scope():
@@ -713,6 +886,7 @@ def test_agent_retrieves_allowed_chunk_neighborhood_as_cited_evidence():
     )
 
     assert model.bound_tool_names == [
+        "find_documents",
         "search_knowledge_base",
         "get_chunk_neighborhood",
     ]
@@ -720,7 +894,11 @@ def test_agent_retrieves_allowed_chunk_neighborhood_as_cited_evidence():
         item.name: item.tool_call_schema.model_json_schema()
         for item in model.bound_tools
     }
-    assert set(schemas["search_knowledge_base"]["properties"]) == {"query"}
+    assert set(schemas["find_documents"]["properties"]) == {"query"}
+    assert set(schemas["search_knowledge_base"]["properties"]) == {
+        "query",
+        "sources",
+    }
     assert set(schemas["get_chunk_neighborhood"]["properties"]) == {
         "source",
         "chunk_id",

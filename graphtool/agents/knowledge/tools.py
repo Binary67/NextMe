@@ -24,6 +24,22 @@ class SearchEvidencePath(BaseModel):
     context_text: str
 
 
+class DocumentMatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    title: str
+    headings: list[str] = Field(default_factory=list)
+
+
+class DocumentSearchArtifact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["document_search"] = "document_search"
+    query: str
+    documents: list[DocumentMatch] = Field(default_factory=list)
+
+
 class KnowledgeSearchArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -62,20 +78,86 @@ class ToolErrorArtifact(BaseModel):
 
 def create_knowledge_tools(runtime: GraphToolRuntime) -> list[BaseTool]:
     @tool(response_format="content_and_artifact")
+    def find_documents(
+        query: str,
+        state: Annotated[AgentState, InjectedState],
+    ) -> tuple[str, DocumentSearchArtifact]:
+        """Find document source IDs by filename, title, headings, or topic."""
+        normalized_query = query.strip()
+        if not normalized_query:
+            raise ValueError("Document search query must not be empty.")
+
+        scope = state.get("knowledge_scope")
+        result = runtime.find_documents(normalized_query, scope=scope)
+        artifact = DocumentSearchArtifact(
+            query=normalized_query,
+            documents=[
+                DocumentMatch(
+                    source=document.source,
+                    title=document.title,
+                    headings=document.headings,
+                )
+                for document in result.documents
+            ],
+        )
+        lines = []
+        for document in artifact.documents:
+            line = f"- {document.source} | title: {document.title}"
+            if document.headings:
+                line += f" | headings: {', '.join(document.headings)}"
+            lines.append(line)
+        content = "\n".join(lines)
+        return (
+            f"Matching documents:\n{content or '- None'}",
+            artifact,
+        )
+
+    @tool(response_format="content_and_artifact")
     def search_knowledge_base(
         query: str,
         state: Annotated[AgentState, InjectedState],
-    ) -> tuple[str, KnowledgeSearchArtifact]:
-        """Search document chunks and knowledge-graph paths for one focused query."""
+        sources: list[str] | None = None,
+    ) -> tuple[str, KnowledgeSearchArtifact | ToolErrorArtifact]:
+        """Search chunks and graph paths, optionally within discovered sources."""
         normalized_query = query.strip()
         if not normalized_query:
             raise ValueError("Knowledge base search query must not be empty.")
 
-        scope = state.get("knowledge_scope")
-        result = (
-            runtime.search(normalized_query, scope=scope)
-            if scope is not None
-            else runtime.search(normalized_query)
+        normalized_sources = None
+        if sources is not None:
+            normalized_sources = list(
+                dict.fromkeys(source.strip() for source in sources)
+            )
+            if (
+                not normalized_sources
+                or any(not source for source in normalized_sources)
+            ):
+                message = "At least one non-empty document source is required."
+                return message, ToolErrorArtifact(
+                    tool_name="search_knowledge_base",
+                    message=message,
+                )
+            allowed_sources = set(state["allowed_sources"])
+            unknown_sources = [
+                source
+                for source in normalized_sources
+                if source not in allowed_sources
+            ]
+            if unknown_sources:
+                joined = ", ".join(repr(source) for source in unknown_sources)
+                message = (
+                    f"Unknown document source: {joined}. Use only source IDs "
+                    "returned by find_documents in this question."
+                )
+                return message, ToolErrorArtifact(
+                    tool_name="search_knowledge_base",
+                    message=message,
+                )
+
+        result = runtime.search(
+            normalized_query,
+            scope=state.get("knowledge_scope"),
+            sources=normalized_sources,
         )
         chunks = [
             SearchEvidenceChunk(
@@ -156,7 +238,7 @@ def create_knowledge_tools(runtime: GraphToolRuntime) -> list[BaseTool]:
         )
         return artifact.context_text, artifact
 
-    return [search_knowledge_base, get_chunk_neighborhood]
+    return [find_documents, search_knowledge_base, get_chunk_neighborhood]
 
 
 def _chunk_reference(chunk: Chunk) -> AgentChunkReference:

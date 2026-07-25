@@ -1,5 +1,6 @@
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 from graphtool.chunking.types import Chunk
 from graphtool.graph.types import Edge, Node
@@ -31,6 +32,7 @@ def search_fields_by_chunk(
 ) -> dict[str, ChunkSearchFields]:
     fields_by_chunk = {}
     for chunk in chunks_by_id.values():
+        source_path = PurePosixPath(chunk.source)
         nodes = index.nodes_by_chunk.get(chunk.id, [])
         edges = index.edges_by_chunk.get(chunk.id, [])
         fields_by_chunk[chunk.id] = ChunkSearchFields(
@@ -46,6 +48,9 @@ def search_fields_by_chunk(
             metadata="\n".join(
                 _unique_search_text(
                     [
+                        chunk.source,
+                        source_path.name,
+                        source_path.stem,
                         *chunk.heading_path,
                         *(node.type for node in nodes),
                         *(
@@ -149,7 +154,7 @@ def _chunk_text(
     edges: Sequence[Edge],
     nodes_by_id: dict[str, Node],
 ) -> str:
-    lines = []
+    lines = ["Source:", chunk.source]
     if chunk.heading_path:
         lines.extend(["Heading:", " > ".join(chunk.heading_path)])
     lines.extend(["Content:", chunk.text])

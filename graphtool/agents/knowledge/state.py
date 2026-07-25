@@ -85,6 +85,17 @@ class EvidenceRecord(BaseModel):
     subquestion_indexes: list[int] = Field(default_factory=list)
 
 
+class DocumentEvidenceRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    source: str
+    title: str
+    headings: list[str] = Field(default_factory=list)
+    reference_ids: list[str] = Field(default_factory=list)
+    subquestion_indexes: list[int] = Field(default_factory=list)
+
+
 class GraphPathEvidenceRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -126,6 +137,7 @@ class AgentState(TypedDict, total=False):
     subquestion_index: int
     subquestion_outcomes: list[SubquestionOutcome]
     evidence: list[EvidenceRecord]
+    document_evidence: list[DocumentEvidenceRecord]
     graph_path_evidence: list[GraphPathEvidenceRecord]
     references: list[EvidenceReference]
     search_count: int
@@ -134,6 +146,7 @@ class AgentState(TypedDict, total=False):
     new_evidence_count: int
     duplicate_evidence_count: int
     previous_missing_information: str
+    allowed_sources: list[str]
     allowed_chunks: list[AgentChunkReference]
     used_neighborhoods: list[str]
     research_action: Literal["tools", "respond", "answer"] | None

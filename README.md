@@ -139,6 +139,7 @@ You can also create the read-only agent through the Python API:
 from graphtool.agents import create_knowledge_agent
 from graphtool.llm import (
     create_azure_openai_agent_model,
+    create_azure_openai_fast_agent_model,
     load_azure_openai_config,
 )
 from graphtool.runtime import create_runtime
@@ -146,8 +147,9 @@ from graphtool.runtime import create_runtime
 config = load_azure_openai_config()
 runtime = create_runtime(config)
 runtime.prepare_search()
-model = create_azure_openai_agent_model(config)
-agent = create_knowledge_agent(model, runtime)
+answer_model = create_azure_openai_agent_model(config)
+orchestration_model = create_azure_openai_fast_agent_model(config)
+agent = create_knowledge_agent(answer_model, orchestration_model, runtime)
 
 response = agent.ask("What can GraphTool do?", thread_id="demo")
 print(response.answer)
@@ -172,13 +174,18 @@ approximately 256,000 tokens, while the most recent 64,000 tokens remain
 verbatim. These limits can be changed with `compaction_trigger_tokens` and
 `retained_recent_tokens` when creating the agent.
 
-The agent binds two read-only tools: `search_knowledge_base` searches document
-chunks and knowledge-graph paths, while `get_chunk_neighborhood` retrieves the
-previous, current, and next chunks around a search result when adjacent context is
-needed. Neighborhood lookup accepts only chunks returned by an earlier search in
-the same subquestion. The agent decomposes compound questions into at most five
-non-overlapping subquestions and makes up to five retrieval tool calls for each
-one. It returns `status="partial"` when the available evidence remains incomplete.
+The agent binds three read-only tools. `find_documents` discovers canonical source
+IDs from filenames, titles, headings, and document topics.
+`search_knowledge_base` searches document chunks and knowledge-graph paths across
+the selected folder or, when canonical source IDs are supplied, only within those
+documents. `get_chunk_neighborhood` retrieves the previous, current, and next
+chunks around a search result when adjacent context is needed. Source-filtered
+search accepts only IDs returned by `find_documents` for the current question, and
+neighborhood lookup accepts only chunks returned by an earlier knowledge search
+for the same subquestion. The agent decomposes compound questions into at most
+five non-overlapping subquestions and makes up to three retrieval tool calls for
+each one. It returns `status="partial"` when the available evidence remains
+incomplete.
 
 ## Telegram bot
 

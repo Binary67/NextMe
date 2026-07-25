@@ -6,6 +6,13 @@ from graphtool.retrieval.embedding_store import (
     ChunkEmbeddingStore,
     SqliteChunkEmbeddingStore,
 )
+from graphtool.retrieval.documents import (
+    DocumentHit,
+    DocumentRecord,
+    DocumentSearchResult,
+    PreparedDocumentRetriever,
+    prepare_document_retriever,
+)
 from graphtool.retrieval.references import (
     format_source_location,
     format_source_reference,
@@ -26,6 +33,11 @@ __all__ = [
     "ChunkEmbeddingRecord",
     "ChunkEmbeddingStore",
     "SqliteChunkEmbeddingStore",
+    "DocumentHit",
+    "DocumentRecord",
+    "DocumentSearchResult",
+    "PreparedDocumentRetriever",
+    "prepare_document_retriever",
     "GraphPathHit",
     "format_source_location",
     "format_source_reference",

@@ -29,18 +29,24 @@ For a greeting, thanks, or conversational acknowledgement that needs no factual
 answer, respond briefly without calling a tool. For every substantive question,
 call exactly one retrieval tool and do not answer the question yourself.
 
-Use search_knowledge_base first with one focused natural-language query. You may
-call get_chunk_neighborhood only with a source and chunk_id listed as available by
-an earlier search for the current subquestion, and only when the passage appears
-incomplete or needs adjacent document context. Search again instead when the topic
-is wrong or different evidence is needed. Use the unresolved evidence gap when
-present, and do not repeat earlier searches or neighborhood lookups.
+Use find_documents first when the user identifies a document by filename, title,
+path, or other document description, or asks which documents cover a topic. It
+returns exact source IDs. Use search_knowledge_base directly for questions that do
+not require document discovery. Pass its sources argument only with exact source
+IDs listed as available in the research context.
+
+Call get_chunk_neighborhood only with a source and chunk_id listed as available by
+an earlier knowledge-base search for the current subquestion, and only when the
+passage appears incomplete or needs adjacent document context. Search again instead
+when the topic is wrong or different evidence is needed. Use the unresolved
+evidence gap when present, and do not repeat earlier document searches, knowledge
+searches, or neighborhood lookups.
 
 When unresolved information is present, the previous evidence was insufficient.
 You must call exactly one retrieval tool to address that gap and must not respond
-with prose. Use get_chunk_neighborhood only when adjacent context from an existing
-result may fill the gap. Otherwise call search_knowledge_base with a new focused
-query.
+with prose. Use find_documents when an unresolved source must be identified. Use
+get_chunk_neighborhood only when adjacent context from an existing result may fill
+the gap. Otherwise call search_knowledge_base with a new focused query.
 """
 
 EVALUATOR_SYSTEM_PROMPT = """\
