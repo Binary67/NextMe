@@ -6,6 +6,37 @@ it.
 
 ## July 25, 2026
 
+### Document discovery and source-filtered retrieval
+
+#### Intention
+
+- Let users identify documents by filename, title, heading, or topic before
+  asking questions about their contents.
+- Prevent named-document questions from mixing evidence from similarly relevant
+  sources.
+- Keep document-specific retrieval scalable without caching a complete
+  retriever for every source.
+
+#### Changes implemented
+
+- Added a prepared document index over canonical source paths, filenames,
+  derived titles, and headings, combined with passage-level topic relevance.
+- Added the read-only `find_documents` agent tool and carried its canonical
+  source IDs into research context and citable document evidence.
+- Extended `search_knowledge_base` with optional source filtering and rejected
+  source IDs that were not returned by document discovery for the question.
+- Added ephemeral source-filtered hybrid retrieval that filters chunks and
+  source-provenance graph evidence without creating unbounded per-document
+  caches.
+- Included source metadata in lexical and semantic chunk-search inputs.
+- Added focused coverage for filename and topic discovery, folder isolation,
+  source authorization, source-filtered graph paths, document-list questions,
+  and document-specific factual questions.
+- Updated the knowledge-agent API example and tool documentation in
+  `README.md`.
+
+---
+
 ### Citable graph-path evidence
 
 #### Intention
