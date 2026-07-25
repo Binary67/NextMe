@@ -237,6 +237,16 @@ def test_partial_response_is_labeled():
     )
 
 
+def test_clarification_response_is_not_labeled_as_partial():
+    response = AgentResponse(
+        answer="Which plan should I use?",
+        status="needs_input",
+        search_count=1,
+    )
+
+    assert format_agent_response(response) == "Which plan should I use?"
+
+
 def test_long_messages_are_split_within_limit():
     text = "alpha beta gamma delta"
 

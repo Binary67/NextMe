@@ -15,8 +15,9 @@ from graphtool.run_logging import LOGGER_NAME
 MAX_TELEGRAM_MESSAGE_LENGTH = 4_096
 TYPING_REFRESH_INTERVAL_SECONDS = 4
 START_MESSAGE = (
-    "Send me a question about the GraphTool knowledge base. I will remember "
-    "this conversation until the bot restarts. Send /new to start over."
+    "Send me a question or request. I can search the GraphTool knowledge base "
+    "when needed and will remember this conversation until the bot restarts. "
+    "Send /new to start over."
 )
 UNAUTHORIZED_MESSAGE = "You are not authorized to use this bot."
 NEW_CONVERSATION_MESSAGE = "Started a new conversation."

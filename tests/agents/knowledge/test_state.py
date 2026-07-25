@@ -3,6 +3,7 @@ import json
 import pytest
 
 from graphtool.agents.knowledge.state import (
+    AskUserRecommendation,
     ExpandRecommendation,
     SearchRecommendation,
     SufficiencyDecision,
@@ -13,7 +14,7 @@ def test_sufficiency_decision_schema_uses_supported_union():
     schema = SufficiencyDecision.model_json_schema()
 
     assert "oneOf" not in json.dumps(schema)
-    assert len(schema["properties"]["recommendation"]["anyOf"]) == 3
+    assert len(schema["properties"]["recommendation"]["anyOf"]) == 4
 
 
 @pytest.mark.parametrize(
@@ -35,6 +36,14 @@ def test_sufficiency_decision_schema_uses_supported_union():
                 "chunk_id": "chunk-1",
             },
             ExpandRecommendation,
+        ),
+        (
+            {
+                "action": "ask_user",
+                "reason": "The target document is ambiguous.",
+                "question": "Which document should I use?",
+            },
+            AskUserRecommendation,
         ),
     ],
 )

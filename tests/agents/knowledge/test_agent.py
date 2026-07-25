@@ -15,6 +15,7 @@ from graphtool.agents.knowledge import (
 )
 from graphtool.agents.knowledge.prompts import NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
 from graphtool.agents.knowledge.state import (
+    AskUserRecommendation,
     ConversationSummary,
     ExpandRecommendation,
     FinalAnswerDraft,
@@ -217,6 +218,10 @@ def _search_call(query, sources=None):
 
 def _document_call(query):
     return _tool_call("find_documents", query=query)
+
+
+def _ask_user_call(question):
+    return _tool_call("ask_user", question=question)
 
 
 def _neighborhood_call(source, chunk_id):
@@ -828,9 +833,9 @@ def test_agent_corrects_missing_follow_up_tool_call():
     ]
     corrective_call = model.calls[ToolModelResponse][2]
     assert corrective_call[-1].content == (
-        "Your previous response did not call a retrieval tool. The available "
-        "evidence is insufficient, so call exactly one retrieval tool now. Do not "
-        "answer with prose."
+        "Your previous response did not call a tool. The available evidence is "
+        "insufficient, so call exactly one recommended tool now. Do not answer "
+        "with prose."
     )
 
 
@@ -918,6 +923,7 @@ def test_agent_retrieves_allowed_chunk_neighborhood_as_cited_evidence():
     )
 
     assert model.bound_tool_names == [
+        "ask_user",
         "find_documents",
         "search_knowledge_base",
         "get_chunk_neighborhood",
@@ -926,6 +932,7 @@ def test_agent_retrieves_allowed_chunk_neighborhood_as_cited_evidence():
         item.name: item.tool_call_schema.model_json_schema()
         for item in model.bound_tools
     }
+    assert set(schemas["ask_user"]["properties"]) == {"question"}
     assert set(schemas["find_documents"]["properties"]) == {"query"}
     assert set(schemas["search_knowledge_base"]["properties"]) == {
         "query",
@@ -1199,8 +1206,7 @@ def test_agent_corrects_multiple_initial_tool_calls():
     assert runtime.search_calls == ["provider"]
     correction = model.calls[ToolModelResponse][1][-1].content
     assert correction == (
-        "Call exactly one retrieval tool. Do not call multiple tools or answer "
-        "with prose."
+        "Call exactly one tool. Do not call multiple tools or answer with prose."
     )
 
 
@@ -1609,14 +1615,14 @@ def test_evaluator_prevents_substantive_response_without_evidence():
     assert runtime.search_calls == ["GraphTool provider"]
 
 
-def test_agent_allows_evaluator_approved_conversation_without_search():
+def test_agent_allows_evaluator_approved_direct_response_without_search():
     model = ScriptedModel(
         {
             ToolModelResponse: [
                 _direct_response("Hello! How can I help?")
             ],
             SufficiencyDecision: [
-                SufficiencyDecision(verdict="conversation")
+                SufficiencyDecision(verdict="direct")
             ],
         }
     )
@@ -1632,6 +1638,154 @@ def test_agent_allows_evaluator_approved_conversation_without_search():
     assert runtime.search_calls == []
 
 
+def test_agent_interrupts_for_clarification_and_resumes_same_research():
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _ask_user_call("Which plan should I summarize?"),
+                _search_call("Phoenix plan"),
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(verdict="sufficient")
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="The Phoenix plan uses staged deployment.",
+                    cited_reference_ids=["S1"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime([_result("Phoenix plan")])
+    agent = create_knowledge_agent(model, model, runtime)
+
+    clarification = agent.ask(
+        "Summarize the plan.",
+        thread_id="thread-1",
+    )
+
+    assert clarification.answer == "Which plan should I summarize?"
+    assert clarification.status == "needs_input"
+    assert clarification.search_count == 0
+    assert runtime.search_calls == []
+
+    response = agent.ask("The Phoenix plan.", thread_id="thread-1")
+
+    assert response.answer == "The Phoenix plan uses staged deployment."
+    assert response.status == "complete"
+    assert runtime.search_calls == ["Phoenix plan"]
+    resumed_research = model.calls[ToolModelResponse][1]
+    resumed_messages = [
+        (message.type, str(message.content)) for message in resumed_research
+    ]
+    assert ("ai", "Which plan should I summarize?") in resumed_messages
+    assert ("human", "The Phoenix plan.") in resumed_messages
+    assert not any(message_type == "tool" for message_type, _ in resumed_messages)
+
+
+def test_agent_preserves_evidence_while_waiting_for_user_input():
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _search_call("migration plans"),
+                _ask_user_call("Do you mean the Phoenix or Apollo plan?"),
+                _search_call("Phoenix migration owner"),
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(
+                    verdict="insufficient",
+                    missing_information=["The intended plan is ambiguous."],
+                    recommendation=AskUserRecommendation(
+                        reason="Only the user can select the intended plan.",
+                        question="Do you mean the Phoenix or Apollo plan?",
+                    ),
+                ),
+                SufficiencyDecision(verdict="sufficient"),
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="The Phoenix migration owner is Priya.",
+                    cited_reference_ids=["S1", "S2"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [
+            _result("migration plans", page=1),
+            _result("Phoenix migration owner", page=2),
+        ]
+    )
+    agent = create_knowledge_agent(model, model, runtime)
+
+    clarification = agent.ask(
+        "Who owns the migration plan?",
+        thread_id="thread-1",
+    )
+
+    assert clarification.status == "needs_input"
+    assert clarification.search_count == 1
+    assert runtime.search_calls == ["migration plans"]
+
+    response = agent.ask("Phoenix.", thread_id="thread-1")
+
+    assert response.status == "complete"
+    assert response.search_count == 2
+    assert runtime.search_calls == [
+        "migration plans",
+        "Phoenix migration owner",
+    ]
+    assert response.references == [
+        SourceReference(source="docs/guide.md", page_start=1, page_end=1),
+        SourceReference(source="docs/guide.md", page_start=2, page_end=2),
+    ]
+
+
+def test_agent_handles_user_supplied_transformation_without_retrieval():
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _direct_response("| Name | Value |\n| --- | --- |\n| Alpha | 1 |")
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(verdict="direct")
+            ],
+        }
+    )
+    runtime = FakeRuntime([])
+    agent = create_knowledge_agent(model, model, runtime)
+
+    response = agent.ask(
+        "Put this into a table: Alpha is 1.",
+        thread_id="thread-1",
+    )
+
+    assert response.status == "complete"
+    assert response.search_count == 0
+    assert runtime.search_calls == []
+
+
+def test_agent_handles_direct_response_without_existing_knowledge_base():
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _direct_response("I am GraphTool's knowledge assistant.")
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(verdict="direct")
+            ],
+        }
+    )
+    runtime = FakeRuntime([], knowledge_base_exists=False)
+    agent = create_knowledge_agent(model, model, runtime)
+
+    response = agent.ask("What agent are you?", thread_id="thread-1")
+
+    assert response.status == "complete"
+    assert response.search_count == 0
+    assert runtime.search_calls == []
+
+
 def test_in_memory_threads_retain_only_their_own_conversation(caplog):
     model = ScriptedModel(
         {
@@ -1641,7 +1795,7 @@ def test_in_memory_threads_retain_only_their_own_conversation(caplog):
                 _direct_response("Separate answer"),
             ],
             SufficiencyDecision: [
-                SufficiencyDecision(verdict="conversation") for _ in range(3)
+                SufficiencyDecision(verdict="direct") for _ in range(3)
             ],
         }
     )
@@ -1718,7 +1872,7 @@ def test_agent_incrementally_compacts_old_conversation_messages():
     answer_model = ScriptedModel(
         {
             SufficiencyDecision: [
-                SufficiencyDecision(verdict="conversation") for _ in range(3)
+                SufficiencyDecision(verdict="direct") for _ in range(3)
             ],
         }
     )
@@ -1800,13 +1954,32 @@ def test_reset_deletes_conversation_checkpoint():
     model = ScriptedModel(
         {
             ToolModelResponse: [_direct_response("First answer")],
-            SufficiencyDecision: [SufficiencyDecision(verdict="conversation")],
+            SufficiencyDecision: [SufficiencyDecision(verdict="direct")],
         }
     )
     runtime = FakeRuntime([])
     agent = create_knowledge_agent(model, model, runtime)
     config = {"configurable": {"thread_id": "thread-a"}}
     agent.ask("Hello", thread_id="thread-a")
+
+    agent.reset("thread-a")
+
+    assert list(agent._checkpointer.list(config)) == []
+
+
+def test_reset_cancels_pending_user_clarification():
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _ask_user_call("Which plan should I use?")
+            ],
+        }
+    )
+    agent = create_knowledge_agent(model, model, FakeRuntime([]))
+    config = {"configurable": {"thread_id": "thread-a"}}
+
+    response = agent.ask("Summarize the plan.", thread_id="thread-a")
+    assert response.status == "needs_input"
 
     agent.reset("thread-a")
 
@@ -1822,7 +1995,9 @@ def test_reset_rejects_empty_thread_id():
 
 
 def test_agent_rejects_invalid_input_and_missing_knowledge_base():
-    model = ScriptedModel({})
+    model = ScriptedModel(
+        {ToolModelResponse: [_search_call("knowledge question")]}
+    )
     runtime = FakeRuntime([], knowledge_base_exists=False)
     agent = create_knowledge_agent(model, model, runtime)
 

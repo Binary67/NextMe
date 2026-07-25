@@ -21,7 +21,8 @@ from graphtool.agents.knowledge.workflow_nodes import (
     advance_subquestion,
     cleanup,
     complete_subquestion,
-    finish_conversation,
+    finish_direct_response,
+    record_user_response,
     record_tool_results,
 )
 from graphtool.agents.knowledge.workflow_research import make_research_node
@@ -30,6 +31,7 @@ from graphtool.agents.knowledge.workflow_routing import (
     route_decomposition,
     route_evaluation,
     route_research,
+    route_tool_result,
 )
 from graphtool.runtime import GraphToolRuntime
 
@@ -68,12 +70,13 @@ def build_workflow_graph(
     builder.add_node("decompose", decompose)
     builder.add_node("research", research)
     builder.add_node("tools", ToolNode(tools))
+    builder.add_node("record_user_response", record_user_response)
     builder.add_node("record_tool_results", record_tool_results)
     builder.add_node("evaluate", evaluate)
     builder.add_node("complete_subquestion", complete_subquestion)
     builder.add_node("advance_subquestion", advance_subquestion)
     builder.add_node("answer", answer)
-    builder.add_node("finish_conversation", finish_conversation)
+    builder.add_node("finish_direct_response", finish_direct_response)
     builder.add_node("cleanup", cleanup)
     builder.add_edge(START, "compact")
     builder.add_edge("compact", "decompose")
@@ -82,7 +85,7 @@ def build_workflow_graph(
         route_decomposition,
         {
             "research": "research",
-            "finish_conversation": "finish_conversation",
+            "finish_direct_response": "finish_direct_response",
         },
     )
     builder.add_conditional_edges(
@@ -94,13 +97,21 @@ def build_workflow_graph(
             "complete_subquestion": "complete_subquestion",
         },
     )
-    builder.add_edge("tools", "record_tool_results")
+    builder.add_conditional_edges(
+        "tools",
+        route_tool_result,
+        {
+            "record_user_response": "record_user_response",
+            "record_tool_results": "record_tool_results",
+        },
+    )
+    builder.add_edge("record_user_response", "research")
     builder.add_edge("record_tool_results", "evaluate")
     builder.add_conditional_edges(
         "evaluate",
         route_evaluation,
         {
-            "finish_conversation": "finish_conversation",
+            "finish_direct_response": "finish_direct_response",
             "research": "research",
             "complete_subquestion": "complete_subquestion",
         },
@@ -112,6 +123,6 @@ def build_workflow_graph(
     )
     builder.add_edge("advance_subquestion", "research")
     builder.add_edge("answer", "cleanup")
-    builder.add_edge("finish_conversation", "cleanup")
+    builder.add_edge("finish_direct_response", "cleanup")
     builder.add_edge("cleanup", END)
     return builder.compile(checkpointer=checkpointer)

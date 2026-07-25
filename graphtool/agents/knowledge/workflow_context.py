@@ -5,9 +5,10 @@ from langchain_core.messages.utils import count_tokens_approximately
 
 from graphtool.agents.knowledge.state import (
     AgentState,
+    AskUserRecommendation,
     EvidenceReference,
     ExpandRecommendation,
-    RetrievalRecommendation,
+    ResearchRecommendation,
 )
 from graphtool.retrieval import SourceReference, format_source_reference
 from graphtool.sequences import unique_ordered
@@ -237,8 +238,13 @@ def _current_question(state: AgentState) -> str:
 
 
 def _recommendation_text(
-    recommendation: RetrievalRecommendation,
+    recommendation: ResearchRecommendation,
 ) -> str:
+    if isinstance(recommendation, AskUserRecommendation):
+        return (
+            f"ask_user | reason: {recommendation.reason} | question: "
+            f"{recommendation.question}"
+        )
     if isinstance(recommendation, ExpandRecommendation):
         return (
             f"expand | reason: {recommendation.reason} | target: "

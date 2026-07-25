@@ -25,15 +25,25 @@ class ExpandRecommendation(BaseModel):
     chunk_id: str = Field(min_length=1, pattern=r"\S")
 
 
-RetrievalRecommendation = SearchRecommendation | ExpandRecommendation
+class AskUserRecommendation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["ask_user"] = "ask_user"
+    reason: str = Field(min_length=1, pattern=r"\S")
+    question: str = Field(min_length=1, pattern=r"\S")
+
+
+ResearchRecommendation = (
+    SearchRecommendation | ExpandRecommendation | AskUserRecommendation
+)
 
 
 class SufficiencyDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    verdict: Literal["conversation", "sufficient", "insufficient"]
+    verdict: Literal["direct", "sufficient", "insufficient"]
     missing_information: list[str] = Field(default_factory=list)
-    recommendation: RetrievalRecommendation | None = None
+    recommendation: ResearchRecommendation | None = None
 
     @field_validator("missing_information")
     @classmethod
@@ -173,7 +183,7 @@ class AgentResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     answer: str
-    status: Literal["complete", "partial"]
+    status: Literal["complete", "partial", "needs_input"]
     references: list[SourceReference] = Field(default_factory=list)
     search_count: int
 

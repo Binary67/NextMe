@@ -2,6 +2,7 @@ from typing import Annotated, Literal
 
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import InjectedState
+from langgraph.types import interrupt
 from pydantic import BaseModel, ConfigDict, Field
 
 from graphtool.agents.knowledge.state import AgentChunkReference, AgentState
@@ -77,12 +78,35 @@ class ToolErrorArtifact(BaseModel):
 
 
 def create_knowledge_tools(runtime: GraphToolRuntime) -> list[BaseTool]:
+    def require_knowledge_base() -> None:
+        if not runtime.knowledge_base_store.exists():
+            raise FileNotFoundError(
+                "Knowledge base not found. Synchronize documents before asking."
+            )
+
+    @tool
+    def ask_user(question: str) -> str:
+        """Ask one focused question when only the user can resolve an ambiguity."""
+        normalized_question = question.strip()
+        if not normalized_question:
+            raise ValueError("User clarification question must not be empty.")
+        answer = interrupt(
+            {
+                "kind": "ask_user",
+                "question": normalized_question,
+            }
+        )
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError("User clarification answer must not be empty.")
+        return answer.strip()
+
     @tool(response_format="content_and_artifact")
     def find_documents(
         query: str,
         state: Annotated[AgentState, InjectedState],
     ) -> tuple[str, DocumentSearchArtifact]:
         """Find document source IDs by filename, title, headings, or topic."""
+        require_knowledge_base()
         normalized_query = query.strip()
         if not normalized_query:
             raise ValueError("Document search query must not be empty.")
@@ -119,6 +143,7 @@ def create_knowledge_tools(runtime: GraphToolRuntime) -> list[BaseTool]:
         sources: list[str] | None = None,
     ) -> tuple[str, KnowledgeSearchArtifact | ToolErrorArtifact]:
         """Search chunks and graph paths, optionally within discovered sources."""
+        require_knowledge_base()
         normalized_query = query.strip()
         if not normalized_query:
             raise ValueError("Knowledge base search query must not be empty.")
@@ -200,6 +225,7 @@ def create_knowledge_tools(runtime: GraphToolRuntime) -> list[BaseTool]:
         state: Annotated[AgentState, InjectedState],
     ) -> tuple[str, ChunkNeighborhoodArtifact | ToolErrorArtifact]:
         """Return the previous, current, and next chunks around a prior search hit."""
+        require_knowledge_base()
         key = _chunk_key(source, chunk_id)
         allowed_keys = {
             _chunk_key(item.source, item.chunk_id)
@@ -238,7 +264,12 @@ def create_knowledge_tools(runtime: GraphToolRuntime) -> list[BaseTool]:
         )
         return artifact.context_text, artifact
 
-    return [find_documents, search_knowledge_base, get_chunk_neighborhood]
+    return [
+        ask_user,
+        find_documents,
+        search_knowledge_base,
+        get_chunk_neighborhood,
+    ]
 
 
 def _chunk_reference(chunk: Chunk) -> AgentChunkReference:

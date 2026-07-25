@@ -174,8 +174,12 @@ approximately 256,000 tokens, while the most recent 64,000 tokens remain
 verbatim. These limits can be changed with `compaction_trigger_tokens` and
 `retained_recent_tokens` when creating the agent.
 
-The agent binds three read-only tools. `find_documents` discovers canonical source
-IDs from filenames, titles, headings, and document topics.
+The agent binds four tools. `ask_user` pauses the current graph when a material
+ambiguity or missing input can only be resolved by the user. The next message on
+the same thread resumes the paused graph with its evidence and research progress
+preserved. Pending questions use the in-memory checkpointer and therefore do not
+survive a process restart. `find_documents` discovers canonical source IDs from
+filenames, titles, headings, and document topics.
 `search_knowledge_base` searches document chunks and knowledge-graph paths across
 the selected folder or, when canonical source IDs are supplied, only within those
 documents. `get_chunk_neighborhood` retrieves the previous, current, and next
@@ -185,7 +189,10 @@ neighborhood lookup accepts only chunks returned by an earlier knowledge search
 for the same subquestion. The agent decomposes compound questions into at most
 five non-overlapping subquestions and makes up to three retrieval tool calls for
 each one. It returns `status="partial"` when the available evidence remains
-incomplete.
+incomplete and `status="needs_input"` when it is waiting for clarification.
+Requests that can be completed from the conversation, user-supplied content, or
+general knowledge—such as identity questions, translation, and reformatting—can
+be answered without knowledge-base retrieval.
 
 ## Telegram bot
 

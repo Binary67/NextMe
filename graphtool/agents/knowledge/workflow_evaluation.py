@@ -51,7 +51,7 @@ def make_evaluate_node(evaluator_model):
                     ],
                 ),
             )
-        if decision.verdict == "conversation" and (
+        if decision.verdict == "direct" and (
             state["evidence"] or not state.get("direct_response")
         ):
             decision = SufficiencyDecision(

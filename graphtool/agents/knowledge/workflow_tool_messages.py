@@ -83,3 +83,8 @@ def log_tool_selection(tool_call: dict) -> None:
             arguments.get("source", ""),
             arguments.get("chunk_id", ""),
         )
+    elif name == "ask_user":
+        RUN_LOGGER.info(
+            "Clarification question: %s",
+            arguments.get("question", ""),
+        )

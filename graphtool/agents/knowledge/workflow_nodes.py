@@ -1,6 +1,6 @@
 import logging
 
-from langchain_core.messages import AIMessage, RemoveMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 
 from graphtool.agents.knowledge.state import (
     AgentResponse,
@@ -223,9 +223,55 @@ def record_tool_results(state: AgentState) -> dict:
     }
 
 
+def record_user_response(state: AgentState) -> dict:
+    tool_messages = trailing_tool_messages(state["messages"])
+    if len(tool_messages) != 1 or tool_messages[0].name != "ask_user":
+        raise RuntimeError("Expected one ask_user tool response.")
+    tool_message = tool_messages[0]
+    exchange_messages = tool_exchange_messages(
+        state["messages"],
+        tool_messages,
+    )
+    if not exchange_messages or not isinstance(exchange_messages[0], AIMessage):
+        raise RuntimeError("ask_user response is missing its tool call.")
+    tool_call = next(
+        (
+            call
+            for call in exchange_messages[0].tool_calls
+            if call.get("id") == tool_message.tool_call_id
+        ),
+        None,
+    )
+    if tool_call is None:
+        raise RuntimeError("ask_user response does not match its tool call.")
+    arguments = tool_call.get("args", {})
+    question = arguments.get("question") if isinstance(arguments, dict) else None
+    if not isinstance(question, str) or not question.strip():
+        raise RuntimeError("ask_user tool call is missing its question.")
+    if not isinstance(tool_message.content, str) or not tool_message.content.strip():
+        raise RuntimeError("ask_user tool response is empty.")
+    normalized_question = question.strip()
+    normalized_answer = tool_message.content.strip()
+    RUN_LOGGER.info("User answered clarification question")
+    return {
+        "messages": [
+            *[
+                RemoveMessage(id=message.id)
+                for message in exchange_messages
+                if message.id is not None
+            ],
+            AIMessage(content=normalized_question),
+            HumanMessage(content=normalized_answer),
+        ],
+        "research_action": None,
+        "direct_response": None,
+        "evaluation": None,
+    }
+
+
 def complete_subquestion(state: AgentState) -> dict:
     evaluation = state["evaluation"]
-    if evaluation is None or evaluation.verdict == "conversation":
+    if evaluation is None or evaluation.verdict == "direct":
         raise RuntimeError("Subquestion evaluation is not complete.")
     outcome = SubquestionOutcome(
         question=state["subquestions"][state["subquestion_index"]],
@@ -252,7 +298,7 @@ def advance_subquestion(state: AgentState) -> dict:
     }
 
 
-def finish_conversation(state: AgentState) -> dict:
+def finish_direct_response(state: AgentState) -> dict:
     response = AgentResponse(
         answer=state["direct_response"] or "",
         status="complete",

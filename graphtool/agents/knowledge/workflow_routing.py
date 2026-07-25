@@ -10,10 +10,17 @@ RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 
 def route_decomposition(state: AgentState) -> str:
     return (
-        "finish_conversation"
+        "finish_direct_response"
         if state.get("direct_response")
         else "research"
     )
+
+
+def route_tool_result(state: AgentState) -> str:
+    messages = state["messages"]
+    if messages and getattr(messages[-1], "name", None) == "ask_user":
+        return "record_user_response"
+    return "record_tool_results"
 
 
 def route_research(state: AgentState) -> str:
@@ -30,8 +37,8 @@ def route_evaluation(state: AgentState) -> str:
     evaluation = state["evaluation"]
     if evaluation is None:
         raise RuntimeError("Evidence evaluation is missing.")
-    if evaluation.verdict == "conversation":
-        return "finish_conversation"
+    if evaluation.verdict == "direct":
+        return "finish_direct_response"
     if evaluation.verdict == "sufficient":
         return "complete_subquestion"
     if (

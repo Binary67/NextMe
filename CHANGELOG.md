@@ -6,6 +6,32 @@ it.
 
 ## July 25, 2026
 
+### Interruptible clarification and request routing
+
+#### Intention
+
+- Let the agent ask for user-only information without discarding completed
+  research.
+- Avoid knowledge-base retrieval for requests that can be completed from the
+  conversation, supplied content, or general knowledge.
+
+#### Changes implemented
+
+- Added an `ask_user` tool backed by LangGraph interrupts and resumed pending
+  questions from the next message on the same thread.
+- Preserved retrieved evidence across clarification and normalized answered
+  tool calls into ordinary conversation history before research continued.
+- Added the `needs_input` response status and kept interrupted checkpoints until
+  the graph completed or the conversation was reset.
+- Extended research and evaluation routing for direct responses and structured
+  user-clarification recommendations.
+- Deferred the missing-knowledge-base check to retrieval tools so direct
+  requests remain available without an ingested store.
+- Added focused coverage for initial and post-retrieval clarification, resume,
+  reset, direct transformations, and missing-store behavior.
+
+---
+
 ### Deterministic research routing and progress tracking
 
 #### Intention

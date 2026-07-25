@@ -6,6 +6,7 @@ from openai import APITimeoutError
 from graphtool.agents.knowledge.prompts import RESEARCH_SYSTEM_PROMPT
 from graphtool.agents.knowledge.state import (
     AgentState,
+    AskUserRecommendation,
     ExpandRecommendation,
     SearchRecommendation,
     SufficiencyDecision,
@@ -21,13 +22,12 @@ from graphtool.run_logging import LOGGER_NAME
 
 RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 RESEARCH_TOOL_CORRECTION = (
-    "Your previous response did not call a retrieval tool. The available "
-    "evidence is insufficient, so call exactly one retrieval tool now. Do not "
-    "answer with prose."
+    "Your previous response did not call a tool. The available evidence is "
+    "insufficient, so call exactly one recommended tool now. Do not answer "
+    "with prose."
 )
 SINGLE_RESEARCH_TOOL_CORRECTION = (
-    "Call exactly one retrieval tool. Do not call multiple tools or answer "
-    "with prose."
+    "Call exactly one tool. Do not call multiple tools or answer with prose."
 )
 
 
@@ -149,6 +149,17 @@ def research_response_correction(
     recommendation = (
         evaluation.recommendation if evaluation is not None else None
     )
+    if isinstance(recommendation, AskUserRecommendation):
+        if (
+            name == "ask_user"
+            and arguments.get("question") == recommendation.question
+        ):
+            return None
+        return (
+            "Call ask_user exactly once with question "
+            f"{recommendation.question!r}. Do not call another tool."
+        )
+
     if isinstance(recommendation, ExpandRecommendation):
         if (
             name == "get_chunk_neighborhood"
@@ -162,6 +173,16 @@ def research_response_correction(
             f"{recommendation.chunk_id!r}. Do not call another tool."
         )
 
+    if name == "ask_user":
+        if isinstance(recommendation, SearchRecommendation):
+            return (
+                "The recommended action is search. Call exactly one of "
+                "find_documents or search_knowledge_base, not ask_user."
+            )
+        question = arguments.get("question")
+        if isinstance(question, str) and question.strip():
+            return None
+        return "Call ask_user with one non-empty focused question."
     if name == "get_chunk_neighborhood":
         return (
             "The recommended action is search. Call exactly one of "
