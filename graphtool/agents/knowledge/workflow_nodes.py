@@ -234,10 +234,11 @@ def record_user_response(state: AgentState) -> dict:
     )
     if not exchange_messages or not isinstance(exchange_messages[0], AIMessage):
         raise RuntimeError("ask_user response is missing its tool call.")
+    tool_call_message = exchange_messages[0]
     tool_call = next(
         (
             call
-            for call in exchange_messages[0].tool_calls
+            for call in tool_call_message.tool_calls
             if call.get("id") == tool_message.tool_call_id
         ),
         None,
@@ -252,14 +253,15 @@ def record_user_response(state: AgentState) -> dict:
         raise RuntimeError("ask_user tool response is empty.")
     normalized_question = question.strip()
     normalized_answer = tool_message.content.strip()
+    removed_messages = [
+        RemoveMessage(id=message.id)
+        for message in exchange_messages
+        if message.id is not None
+    ]
     RUN_LOGGER.info("User answered clarification question")
     return {
         "messages": [
-            *[
-                RemoveMessage(id=message.id)
-                for message in exchange_messages
-                if message.id is not None
-            ],
+            *removed_messages,
             AIMessage(content=normalized_question),
             HumanMessage(content=normalized_answer),
         ],

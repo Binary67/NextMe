@@ -264,12 +264,7 @@ def create_knowledge_tools(runtime: GraphToolRuntime) -> list[BaseTool]:
         )
         return artifact.context_text, artifact
 
-    return [
-        ask_user,
-        find_documents,
-        search_knowledge_base,
-        get_chunk_neighborhood,
-    ]
+    return [ask_user, find_documents, search_knowledge_base, get_chunk_neighborhood]
 
 
 def _chunk_reference(chunk: Chunk) -> AgentChunkReference:

@@ -60,39 +60,34 @@ class KnowledgeAgent:
             "recursion_limit": 150,
         }
         if self._pending_interrupt(config) is not None:
-            result = self._graph.invoke(
-                Command(resume=normalized_question),
-                config=config,
-            )
+            graph_input = Command(resume=normalized_question)
         else:
-            result = self._graph.invoke(
-                {
-                    "messages": [HumanMessage(content=normalized_question)],
-                    "question": normalized_question,
-                    "knowledge_scope": None,
-                    "subquestions": [],
-                    "subquestion_index": 0,
-                    "subquestion_outcomes": [],
-                    "evidence": [],
-                    "document_evidence": [],
-                    "graph_path_evidence": [],
-                    "references": [],
-                    "search_count": 0,
-                    "retrieval_count": 0,
-                    "retrieval_queries": [],
-                    "new_evidence_count": 0,
-                    "duplicate_evidence_count": 0,
-                    "consecutive_empty_retrievals": 0,
-                    "allowed_sources": [],
-                    "allowed_chunks": [],
-                    "used_neighborhoods": [],
-                    "research_action": None,
-                    "direct_response": None,
-                    "evaluation": None,
-                    "response": None,
-                },
-                config=config,
-            )
+            graph_input = {
+                "messages": [HumanMessage(content=normalized_question)],
+                "question": normalized_question,
+                "knowledge_scope": None,
+                "subquestions": [],
+                "subquestion_index": 0,
+                "subquestion_outcomes": [],
+                "evidence": [],
+                "document_evidence": [],
+                "graph_path_evidence": [],
+                "references": [],
+                "search_count": 0,
+                "retrieval_count": 0,
+                "retrieval_queries": [],
+                "new_evidence_count": 0,
+                "duplicate_evidence_count": 0,
+                "consecutive_empty_retrievals": 0,
+                "allowed_sources": [],
+                "allowed_chunks": [],
+                "used_neighborhoods": [],
+                "research_action": None,
+                "direct_response": None,
+                "evaluation": None,
+                "response": None,
+            }
+        result = self._graph.invoke(graph_input, config=config)
         pending_interrupt = self._pending_interrupt(config)
         if pending_interrupt is not None:
             payload = pending_interrupt.value
