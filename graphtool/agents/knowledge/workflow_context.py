@@ -10,6 +10,7 @@ from graphtool.agents.knowledge.state import (
     RetrievalRecommendation,
 )
 from graphtool.retrieval import SourceReference, format_source_reference
+from graphtool.sequences import unique_ordered
 
 
 def research_context(state: AgentState) -> str:
@@ -123,16 +124,6 @@ def merge_references(
             ids_by_key[key] = reference_id
         result_ids.append(reference_id)
     return merged, unique_ordered(result_ids)
-
-
-def unique_ordered(values: Sequence[str]) -> list[str]:
-    seen = set()
-    unique = []
-    for value in values:
-        if value not in seen:
-            seen.add(value)
-            unique.append(value)
-    return unique
 
 
 def _evidence_text(

@@ -8,7 +8,11 @@ from langchain_core.messages import AIMessage
 from openai import APITimeoutError
 
 from graphtool.agents.knowledge import create_knowledge_agent
-from graphtool.agents.knowledge import workflow_graph
+from graphtool.agents.knowledge import (
+    workflow_evidence,
+    workflow_model_io,
+    workflow_tool_messages,
+)
 from graphtool.agents.knowledge.prompts import NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
 from graphtool.agents.knowledge.state import (
     ConversationSummary,
@@ -315,9 +319,9 @@ def test_research_tool_selection_is_logged_human_readably(monkeypatch):
         {"info": lambda self, *args: calls.append(args)},
     )()
     calls = []
-    monkeypatch.setattr(workflow_graph, "RUN_LOGGER", logger)
+    monkeypatch.setattr(workflow_tool_messages, "RUN_LOGGER", logger)
 
-    workflow_graph._log_tool_selection(
+    workflow_tool_messages.log_tool_selection(
         {
             "name": "search_knowledge_base",
             "args": {
@@ -326,13 +330,13 @@ def test_research_tool_selection_is_logged_human_readably(monkeypatch):
             },
         }
     )
-    workflow_graph._log_tool_selection(
+    workflow_tool_messages.log_tool_selection(
         {
             "name": "find_documents",
             "args": {"query": "GraphTool guide"},
         }
     )
-    workflow_graph._log_tool_selection(
+    workflow_tool_messages.log_tool_selection(
         {
             "name": "get_chunk_neighborhood",
             "args": {"source": "guide.pdf", "chunk_id": "guide-0013"},
@@ -367,10 +371,10 @@ def test_model_failure_logs_stage_duration_and_status(monkeypatch):
             "error": lambda self, *args: calls.append(("error", *args)),
         },
     )()
-    monkeypatch.setattr(workflow_graph, "RUN_LOGGER", logger)
+    monkeypatch.setattr(workflow_model_io, "RUN_LOGGER", logger)
 
     with pytest.raises(RuntimeError, match="Azure details"):
-        workflow_graph._invoke_model(
+        workflow_model_io.invoke_model(
             FailingModel(),
             [AIMessage(content="Question")],
             stage="research round 2",
@@ -1037,7 +1041,7 @@ def test_graph_path_evidence_is_deduplicated_across_subquestions():
         }
     )
 
-    merged, is_new = workflow_graph._merge_graph_path_evidence_record(
+    merged, is_new = workflow_evidence.merge_graph_path_evidence_record(
         [first],
         duplicate,
         1,
@@ -1200,7 +1204,7 @@ def test_agent_corrects_multiple_initial_tool_calls():
 
 
 def test_agent_continues_when_each_search_adds_one_new_chunk(caplog):
-    caplog.set_level(logging.INFO, logger=workflow_graph.RUN_LOGGER.name)
+    caplog.set_level(logging.INFO, logger=workflow_model_io.RUN_LOGGER.name)
     model = ScriptedModel(
         {
             ToolModelResponse: [
@@ -1241,7 +1245,7 @@ def test_agent_continues_when_each_search_adds_one_new_chunk(caplog):
 def test_agent_researches_each_decomposed_subquestion_and_synthesizes_answer(
     caplog,
 ):
-    caplog.set_level(logging.INFO, logger=workflow_graph.RUN_LOGGER.name)
+    caplog.set_level(logging.INFO, logger=workflow_model_io.RUN_LOGGER.name)
     model = ScriptedModel(
         {
             QueryDecomposition: [
@@ -1432,7 +1436,7 @@ def test_agent_continues_when_missing_information_changes():
 
 
 def test_agent_stops_at_three_retrievals_when_each_adds_evidence(caplog):
-    caplog.set_level(logging.INFO, logger=workflow_graph.RUN_LOGGER.name)
+    caplog.set_level(logging.INFO, logger=workflow_model_io.RUN_LOGGER.name)
 
     def result_with_two_chunks(query, start):
         return _result(
