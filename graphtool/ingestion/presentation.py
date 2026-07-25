@@ -1,4 +1,3 @@
-import hashlib
 import logging
 import shutil
 import subprocess
@@ -9,6 +8,7 @@ from pydantic import BaseModel
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
+from graphtool.ingestion.cache_io import file_hash, write_model_atomic
 from graphtool.ingestion.pdf import convert_pdf_to_markdown
 from graphtool.llm.base import LLMClient
 from graphtool.run_logging import LOGGER_NAME
@@ -43,8 +43,7 @@ def convert_pptx_to_pdf(
     cache_dir: str | Path,
 ) -> Path:
     presentation_path = Path(path)
-    with presentation_path.open("rb") as presentation_file:
-        source_hash = hashlib.file_digest(presentation_file, "sha256").hexdigest()
+    source_hash = file_hash(presentation_path)
 
     source_cache_dir = Path(cache_dir) / source_key(source)
     manifest_path = source_cache_dir / "manifest.json"
@@ -56,7 +55,7 @@ def convert_pptx_to_pdf(
         and manifest.conversion_revision == PRESENTATION_CONVERSION_REVISION
         and manifest.complete
         and pdf_path.exists()
-        and _file_hash(pdf_path) == manifest.pdf_hash
+        and file_hash(pdf_path) == manifest.pdf_hash
     ):
         RUN_LOGGER.info(
             "Using cached PowerPoint PDF for %s (%s %s)",
@@ -100,7 +99,7 @@ def convert_pptx_to_pdf(
                 f"Cannot convert {source!r} to PDF: LibreOffice produced no PDF."
             )
         page_count = _validate_pdf(converted_pdf_path, source)
-        pdf_hash = _file_hash(converted_pdf_path)
+        pdf_hash = file_hash(converted_pdf_path)
 
         source_cache_dir.mkdir(parents=True, exist_ok=True)
         temporary_pdf_path = pdf_path.with_suffix(".pdf.tmp")
@@ -114,7 +113,7 @@ def convert_pptx_to_pdf(
         complete=True,
         pdf_hash=pdf_hash,
     )
-    _write_model_atomic(manifest_path, completed_manifest)
+    write_model_atomic(manifest_path, completed_manifest)
     RUN_LOGGER.info(
         "Converted PowerPoint to PDF: %s (%s %s)",
         source,
@@ -146,15 +145,3 @@ def _load_manifest(path: Path) -> _PresentationConversionManifest | None:
     if not path.exists():
         return None
     return _PresentationConversionManifest.model_validate_json(path.read_text())
-
-
-def _file_hash(path: Path) -> str:
-    with path.open("rb") as file:
-        return hashlib.file_digest(file, "sha256").hexdigest()
-
-
-def _write_model_atomic(path: Path, model: BaseModel) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_suffix(f"{path.suffix}.tmp")
-    temporary_path.write_text(model.model_dump_json(indent=2), encoding="utf-8")
-    temporary_path.replace(path)
