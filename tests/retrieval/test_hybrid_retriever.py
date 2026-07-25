@@ -11,7 +11,11 @@ from graphtool.retrieval import (
 )
 from graphtool.retrieval.hybrid_retriever import retrieve_hybrid_context
 from graphtool.retrieval.hybrid_retriever import prepare_hybrid_retriever
-from graphtool.retrieval.retriever import retrieve_context
+from graphtool.retrieval.graph_retriever import PreparedGraphRetriever
+from graphtool.retrieval.retriever import (
+    PreparedChunkRetriever,
+    retrieve_context,
+)
 
 
 class FakeEmbeddingClient:
@@ -120,6 +124,7 @@ def _hit(chunk_id: str, source: str, index: int) -> ChunkHit:
             text=f"Evidence for {chunk_id}.",
         ),
         score=1.0,
+        relevance=1.0,
         linked_nodes=[],
         linked_relationships=[],
     )
@@ -160,7 +165,7 @@ def test_hybrid_search_fuses_distinct_rankings_and_limits_output(monkeypatch):
         chunk_ids=["graph-only"],
     )
 
-    def direct_search(query, graph, chunks, **kwargs):
+    def direct_search(self, query, scores, **kwargs):
         return RetrievalResult(
             query=query,
             sources=["shared.md", "direct.md"],
@@ -168,7 +173,7 @@ def test_hybrid_search_fuses_distinct_rankings_and_limits_output(monkeypatch):
             context_text="Direct context.",
         )
 
-    def graph_search(query, graph, chunks, **kwargs):
+    def graph_search(self, query, **kwargs):
         return RetrievalResult(
             query=query,
             sources=["graph.md", "shared.md"],
@@ -177,12 +182,16 @@ def test_hybrid_search_fuses_distinct_rankings_and_limits_output(monkeypatch):
             context_text="Graph context.",
         )
 
-    monkeypatch.setattr(hybrid_retriever, "retrieve_context", direct_search)
+    def chunk_scores(self, query, *, query_vector=None):
+        return {"overlap": 1.0, "direct-only": 1.0, "graph-only": 1.0}
+
     monkeypatch.setattr(
-        hybrid_retriever,
-        "retrieve_graph_context",
-        graph_search,
+        PreparedChunkRetriever,
+        "result_for_scores",
+        direct_search,
     )
+    monkeypatch.setattr(PreparedChunkRetriever, "chunk_scores", chunk_scores)
+    monkeypatch.setattr(PreparedGraphRetriever, "retrieve", graph_search)
 
     result = retrieve_hybrid_context("query", graph, chunks, top_chunks=3)
     limited = retrieve_hybrid_context("query", graph, chunks, top_chunks=2)
@@ -195,6 +204,7 @@ def test_hybrid_search_fuses_distinct_rankings_and_limits_output(monkeypatch):
     assert result.chunks[0].score == pytest.approx(1 / 61 + 1 / 62)
     assert result.chunks[1].score == pytest.approx(1 / 61)
     assert result.chunks[2].score == pytest.approx(1 / 62)
+    assert all(hit.relevance == 1.0 for hit in result.chunks)
     assert result.sources == ["shared.md", "graph.md", "direct.md"]
     assert [reference.source for reference in result.references] == [
         "shared.md",

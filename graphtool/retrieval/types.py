@@ -11,8 +11,14 @@ class ChunkRelationship(BaseModel):
 
 
 class ChunkHit(BaseModel):
+    # score orders hits within one result and is only comparable inside it.
+    # relevance is calibrated against fixed reference points, so it stays
+    # comparable across queries and is what absolute cutoffs apply to. Only
+    # hybrid retrieval resolves both; single-branch retrieval reports its own
+    # ranking value as each.
     chunk: Chunk
     score: float
+    relevance: float
     linked_nodes: list[Node]
     linked_relationships: list[ChunkRelationship]
 

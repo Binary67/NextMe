@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from time import perf_counter
 
@@ -17,18 +17,21 @@ from graphtool.retrieval.graph_retriever import (
     NodeEmbeddingStore,
     PreparedGraphRetriever,
     prepare_graph_retriever,
-    retrieve_graph_context,
 )
 from graphtool.retrieval.retriever import (
     PreparedChunkRetriever,
     prepare_chunk_retriever,
-    retrieve_context,
 )
 from graphtool.retrieval.types import ChunkHit, RetrievalResult
 from graphtool.run_logging import LOGGER_NAME
 from graphtool.sequences import unique_ordered
 
 RECIPROCAL_RANK_CONSTANT = 60
+FUSION_POOL_MULTIPLIER = 3
+# Kept low because BM25 magnitude grows with corpus size, and scope- or
+# source-filtered searches run against only a handful of documents. The
+# semantic term is the absolutely calibrated signal; this only drops noise.
+MIN_CHUNK_RELEVANCE = 0.05
 RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 
 
@@ -57,11 +60,16 @@ class PreparedHybridRetriever:
                 "Query embedding completed in %.2fs",
                 perf_counter() - started_at,
             )
+        pool_size = top_chunks * FUSION_POOL_MULTIPLIER
         started_at = perf_counter()
-        direct_result = self.direct.retrieve(
+        direct_scores = self.direct.chunk_scores(
             query,
-            top_chunks=top_chunks,
             query_vector=query_vector,
+        )
+        direct_result = self.direct.result_for_scores(
+            query,
+            direct_scores,
+            top_chunks=pool_size,
         )
         RUN_LOGGER.info(
             "Direct retrieval completed in %.2fs",
@@ -72,14 +80,20 @@ class PreparedHybridRetriever:
             query,
             max_hops=max_hops,
             top_paths=top_paths,
-            top_chunks=top_chunks,
+            top_chunks=pool_size,
             query_vector=query_vector,
         )
         RUN_LOGGER.info(
             "Graph retrieval completed in %.2fs",
             perf_counter() - started_at,
         )
-        result = _combine_results(query, direct_result, graph_result, top_chunks)
+        result = _combine_results(
+            query,
+            direct_result,
+            graph_result,
+            direct_scores,
+            top_chunks,
+        )
         RUN_LOGGER.info(
             "Retrieval completed in %.2fs: chunks=%d, sources=%d, graph paths=%d",
             perf_counter() - retrieval_started_at,
@@ -127,44 +141,42 @@ def retrieve_hybrid_context(
     chunk_embedding_store: ChunkEmbeddingStore | None = None,
     node_embedding_store: NodeEmbeddingStore | None = None,
 ) -> RetrievalResult:
-    query_vector = (
-        embedding_client.embed_texts([query])[0]
-        if embedding_client is not None and chunks
-        else None
-    )
-    direct_result = retrieve_context(
-        query,
+    prepared = prepare_hybrid_retriever(
         graph,
         chunks,
-        top_chunks=top_chunks,
         embedding_client=embedding_client,
         chunk_embedding_store=chunk_embedding_store,
-        query_vector=query_vector,
+        node_embedding_store=node_embedding_store,
     )
-    graph_result = retrieve_graph_context(
+    return prepared.retrieve(
         query,
-        graph,
-        chunks,
         max_hops=max_hops,
         top_paths=top_paths,
         top_chunks=top_chunks,
-        embedding_client=embedding_client,
-        node_embedding_store=node_embedding_store,
-        query_vector=query_vector,
     )
-    return _combine_results(query, direct_result, graph_result, top_chunks)
 
 
 def _combine_results(
     query: str,
     direct_result: RetrievalResult,
     graph_result: RetrievalResult,
+    relevance_by_chunk: Mapping[str, float],
     top_chunks: int,
 ) -> RetrievalResult:
-    chunk_hits = _fuse_chunk_hits(
+    fused = _fuse_chunk_hits(
         direct_result.chunks,
         graph_result.chunks,
-    )[:top_chunks]
+        relevance_by_chunk,
+    )
+    chunk_hits = [
+        hit for hit in fused if hit.relevance >= MIN_CHUNK_RELEVANCE
+    ][:top_chunks]
+    retained_chunk_ids = {hit.chunk.id for hit in chunk_hits}
+    graph_paths = [
+        path
+        for path in graph_result.graph_paths
+        if set(path.chunk_ids).issubset(retained_chunk_ids)
+    ]
     sources = unique_ordered(hit.chunk.source for hit in chunk_hits)
 
     return RetrievalResult(
@@ -172,18 +184,15 @@ def _combine_results(
         sources=sources,
         references=source_references(chunk_hits),
         chunks=chunk_hits,
-        graph_paths=graph_result.graph_paths,
-        context_text=format_context(
-            query,
-            chunk_hits,
-            graph_result.graph_paths,
-        ),
+        graph_paths=graph_paths,
+        context_text=format_context(query, chunk_hits, graph_paths),
     )
 
 
 def _fuse_chunk_hits(
     direct_hits: Sequence[ChunkHit],
     graph_hits: Sequence[ChunkHit],
+    relevance_by_chunk: Mapping[str, float],
 ) -> list[ChunkHit]:
     hits_by_id = {
         hit.chunk.id: hit
@@ -199,7 +208,12 @@ def _fuse_chunk_hits(
             best_rank[hit.chunk.id] = min(best_rank.get(hit.chunk.id, rank), rank)
 
     ranked = [
-        hit.model_copy(update={"score": scores[chunk_id]})
+        hit.model_copy(
+            update={
+                "score": scores[chunk_id],
+                "relevance": relevance_by_chunk.get(chunk_id, 0.0),
+            }
+        )
         for chunk_id, hit in hits_by_id.items()
     ]
     ranked.sort(

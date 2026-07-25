@@ -3,6 +3,7 @@ import pytest
 from graphtool.chunking.types import Chunk
 from graphtool.graph.embedding_store import NodeEmbeddingRecord, SqliteEmbeddingStore
 from graphtool.graph.types import Edge, KnowledgeGraph, Node
+from graphtool.retrieval.graph_paths import PATH_HOP_DECAY
 from graphtool.retrieval.graph_retriever import retrieve_graph_context
 from graphtool.storage import open_database
 
@@ -187,6 +188,21 @@ def test_graph_search_ignores_cached_embeddings_from_another_model(tmp_path):
     assert embedding_client.calls == []
     assert result.graph_paths == []
     assert result.chunks == []
+
+
+def test_graph_path_scores_stay_below_one_when_query_names_path_nodes():
+    result = retrieve_graph_context(
+        "How is Alpha related to Gamma?",
+        _graph(),
+        _chunks(),
+        max_hops=2,
+        top_paths=5,
+    )
+
+    assert result.graph_paths[0].score < PATH_HOP_DECAY
+    assert len({path.score for path in result.graph_paths}) == len(
+        result.graph_paths
+    )
 
 
 def test_graph_search_respects_max_hops():

@@ -5,7 +5,10 @@ import pytest
 from graphtool.chunking.types import Chunk
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.retrieval import SqliteChunkEmbeddingStore
-from graphtool.retrieval.retriever import retrieve_context
+from graphtool.retrieval.retriever import (
+    prepare_chunk_retriever,
+    retrieve_context,
+)
 from graphtool.storage import open_database
 
 
@@ -428,9 +431,52 @@ def test_retrieve_context_combines_weighted_normalized_fields_and_semantic_score
             open_database(tmp_path / "embeddings.db")
         ),
     )
+    without_semantic = retrieve_context("validation", graph, chunks)
 
-    assert result.chunks[0].score == pytest.approx(6.0)
-    assert all(0.0 < hit.score <= 6.0 for hit in result.chunks)
+    hit = result.chunks[0]
+    assert 0.0 < hit.score < 1.0
+    assert hit.relevance == hit.score
+    assert hit.score > without_semantic.chunks[0].score
+
+
+def test_chunk_scores_match_the_scores_reported_on_returned_hits():
+    prepared = prepare_chunk_retriever(_graph(), _chunks())
+
+    scores = prepared.chunk_scores("data validation built for python")
+    result = prepared.result_for_scores(
+        "data validation built for python",
+        scores,
+        top_chunks=len(scores),
+    )
+
+    assert scores
+    assert {hit.chunk.id: hit.relevance for hit in result.chunks} == scores
+
+
+def test_retrieve_context_does_not_inflate_a_weak_best_semantic_match(tmp_path):
+    chunks = [
+        Chunk(id="only", source="doc.md", index=0, text="Recovery notes.")
+    ]
+    graph = KnowledgeGraph(nodes=[], edges=[])
+
+    def _retrieve(chunk_vector, name):
+        return retrieve_context(
+            "storage tuning",
+            graph,
+            chunks,
+            embedding_client=FakeEmbeddingClient(
+                {"storage tuning": [1.0, 0.0], "Recovery": chunk_vector}
+            ),
+            chunk_embedding_store=SqliteChunkEmbeddingStore(
+                open_database(tmp_path / f"{name}.db")
+            ),
+        )
+
+    weak = _retrieve([0.75, 0.6614], "weak")
+    strong = _retrieve([1.0, 0.0], "strong")
+
+    assert weak.chunks[0].score < 0.1
+    assert strong.chunks[0].score > 4 * weak.chunks[0].score
 
 
 def test_prominent_graph_annotations_do_not_override_stronger_evidence():

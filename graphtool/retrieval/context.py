@@ -64,6 +64,7 @@ def attach_graph_annotations(
         ChunkHit(
             chunk=chunk,
             score=score,
+            relevance=score,
             linked_nodes=index.nodes_by_chunk.get(chunk.id, []),
             linked_relationships=relationships_by_chunk.get(chunk.id, []),
         )

@@ -7,7 +7,7 @@ from graphtool.graph.types import Edge, KnowledgeGraph, Node
 from graphtool.retrieval.bm25 import BM25Document, BM25Index, tokenize
 from graphtool.retrieval.scoring import (
     bm25_scores,
-    normalize_scores,
+    combine_weighted_scores,
     semantic_similarity_scores,
 )
 from graphtool.retrieval.types import GraphPathHit
@@ -16,6 +16,18 @@ from graphtool.sequences import unique_ordered
 DEFAULT_TOP_SEEDS = 5
 DEFAULT_BEAM_WIDTH = 50
 PATH_HOP_DECAY = 0.85
+SEED_LABEL_WEIGHT = 2.0
+SEED_MENTION_WEIGHT = 2.0
+SEED_METADATA_WEIGHT = 1.0
+SEED_SEMANTIC_WEIGHT = 1.0
+PATH_TEXT_WEIGHT = 1.0
+PATH_EVIDENCE_WEIGHT = 0.5
+PATH_COVERAGE_WEIGHT = 1.0
+PATH_MENTION_WEIGHT = 1.0
+# An exact name match is the strongest signal available, but scoring it as
+# certainty would zero the combined product and pin the result at 1.0, hiding
+# every other signal and tying every path that names the same nodes.
+MENTION_CONFIDENCE = 0.9
 
 
 @dataclass(frozen=True)
@@ -37,17 +49,19 @@ def seed_node_scores(
     label_scores = bm25_scores(query, label_index)
     metadata_scores = bm25_scores(query, metadata_index)
     semantic_scores = semantic_similarity_scores(query_vector, node_vectors)
-    return normalize_scores(
-        {
-            node.id: (
-                label_scores.get(node.id, 0.0) * 2.0
-                + mention_scores.get(node.id, 0.0) * 2.0
-                + metadata_scores.get(node.id, 0.0)
-                + semantic_scores.get(node.id, 0.0)
+    scores = {}
+    for node in nodes:
+        score = combine_weighted_scores(
+            (
+                (label_scores.get(node.id, 0.0), SEED_LABEL_WEIGHT),
+                (mention_scores.get(node.id, 0.0), SEED_MENTION_WEIGHT),
+                (metadata_scores.get(node.id, 0.0), SEED_METADATA_WEIGHT),
+                (semantic_scores.get(node.id, 0.0), SEED_SEMANTIC_WEIGHT),
             )
-            for node in nodes
-        }
-    )
+        )
+        if score > 0.0:
+            scores[node.id] = score
+    return scores
 
 
 def mentioned_node_scores(
@@ -75,7 +89,7 @@ def mentioned_node_scores(
             for _, other_start, other_length in matches
         )
         if not contained_by_longer_match:
-            scores[node_id] = 1.0
+            scores[node_id] = MENTION_CONFIDENCE
     return scores
 
 
@@ -179,12 +193,7 @@ def rank_path_candidates(
         )
         for index, candidate in enumerate(candidates)
     ]
-    path_scores = normalize_scores(
-        {
-            document.id: score
-            for document, score in BM25Index(path_documents).rank(query)
-        }
-    )
+    path_scores = bm25_scores(query, BM25Index(path_documents))
     evidence_documents = [
         BM25Document(
             id=str(index),
@@ -197,28 +206,29 @@ def rank_path_candidates(
         )
         for index, candidate in enumerate(candidates)
     ]
-    evidence_scores = normalize_scores(
-        {
-            document.id: score
-            for document, score in BM25Index(evidence_documents).rank(query)
-        }
-    )
-    scores = {
-        str(index): (
-            path_scores.get(str(index), 0.0)
-            + evidence_scores.get(str(index), 0.0) * 0.5
-            + _path_node_coverage(candidate, node_scores)
-            + sum(
-                mention_scores.get(node_id, 0.0)
-                for node_id in candidate.node_ids
-            )
-        )
-        * PATH_HOP_DECAY ** (len(candidate.edge_ids) - 1)
-        for index, candidate in enumerate(candidates)
-    }
-    normalized_scores = normalize_scores(scores)
+    evidence_scores = bm25_scores(query, BM25Index(evidence_documents))
     ranked = [
-        (candidate, normalized_scores.get(str(index), 0.0))
+        (
+            candidate,
+            combine_weighted_scores(
+                (
+                    (path_scores.get(str(index), 0.0), PATH_TEXT_WEIGHT),
+                    (
+                        evidence_scores.get(str(index), 0.0),
+                        PATH_EVIDENCE_WEIGHT,
+                    ),
+                    (
+                        _path_node_coverage(candidate, node_scores),
+                        PATH_COVERAGE_WEIGHT,
+                    ),
+                    (
+                        _path_mention_coverage(candidate, mention_scores),
+                        PATH_MENTION_WEIGHT,
+                    ),
+                )
+            )
+            * PATH_HOP_DECAY ** (len(candidate.edge_ids) - 1),
+        )
         for index, candidate in enumerate(candidates)
     ]
     ranked.sort(
@@ -259,13 +269,12 @@ def rank_evidence_chunks(
     chunks_by_id: Mapping[str, Chunk],
 ) -> list[tuple[Chunk, float]]:
     scores: dict[str, float] = {}
-    for rank, path in enumerate(paths, start=1):
+    for path in paths:
         for chunk_id in path.chunk_ids:
-            scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / rank
-    normalized_scores = normalize_scores(scores)
+            scores[chunk_id] = max(scores.get(chunk_id, 0.0), path.score)
     ranked = [
         (chunks_by_id[chunk_id], score)
-        for chunk_id, score in normalized_scores.items()
+        for chunk_id, score in scores.items()
     ]
     ranked.sort(key=lambda item: (-item[1], item[0].index, item[0].id))
     return ranked
@@ -314,6 +323,15 @@ def _path_node_coverage(
         reverse=True,
     )[:2]
     return sum(strongest_scores) / 2.0
+
+
+def _path_mention_coverage(
+    candidate: PathCandidate,
+    mention_scores: Mapping[str, float],
+) -> float:
+    return sum(
+        mention_scores.get(node_id, 0.0) for node_id in candidate.node_ids
+    ) / len(candidate.node_ids)
 
 
 def _deduplicate_candidates(

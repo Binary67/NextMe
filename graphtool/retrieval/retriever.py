@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from graphtool.chunking.types import Chunk
@@ -21,6 +21,7 @@ from graphtool.retrieval.embedding_store import ChunkEmbeddingStore
 from graphtool.retrieval.scoring import (
     bm25_index,
     bm25_scores,
+    combine_weighted_scores,
     semantic_similarity_scores,
 )
 from graphtool.retrieval.types import RetrievalResult
@@ -51,7 +52,58 @@ class PreparedChunkRetriever:
         top_chunks: int = 5,
         query_vector: Sequence[float] | None = None,
     ) -> RetrievalResult:
-        ranked_chunks = _rank_chunks(query, self, query_vector)[:top_chunks]
+        return self.result_for_scores(
+            query,
+            self.chunk_scores(query, query_vector=query_vector),
+            top_chunks=top_chunks,
+        )
+
+    def chunk_scores(
+        self,
+        query: str,
+        *,
+        query_vector: Sequence[float] | None = None,
+    ) -> dict[str, float]:
+        primary_label_scores = bm25_scores(query, self.primary_label_index)
+        alias_scores = bm25_scores(query, self.alias_index)
+        content_scores = bm25_scores(query, self.content_index)
+        metadata_scores = bm25_scores(query, self.metadata_index)
+        semantic_scores = semantic_similarity_scores(
+            query_vector,
+            self.chunk_vectors,
+        )
+        scores = {}
+        for chunk_id in self.chunks_by_id:
+            score = combine_weighted_scores(
+                (
+                    (
+                        primary_label_scores.get(chunk_id, 0.0),
+                        PRIMARY_LABEL_BM25_WEIGHT,
+                    ),
+                    (alias_scores.get(chunk_id, 0.0), ALIAS_BM25_WEIGHT),
+                    (content_scores.get(chunk_id, 0.0), CONTENT_BM25_WEIGHT),
+                    (metadata_scores.get(chunk_id, 0.0), METADATA_BM25_WEIGHT),
+                    (semantic_scores.get(chunk_id, 0.0), SEMANTIC_CHUNK_WEIGHT),
+                )
+            )
+            if score > 0.0:
+                scores[chunk_id] = score
+        return scores
+
+    def result_for_scores(
+        self,
+        query: str,
+        scores: Mapping[str, float],
+        *,
+        top_chunks: int,
+    ) -> RetrievalResult:
+        ranked_chunks = sorted(
+            (
+                (self.chunks_by_id[chunk_id], score)
+                for chunk_id, score in scores.items()
+            ),
+            key=lambda item: (-item[1], item[0].index, item[0].id),
+        )[:top_chunks]
         chunk_hits = attach_graph_annotations(
             ranked_chunks,
             self.graph_index,
@@ -144,30 +196,4 @@ def prepare_chunk_retriever(
     )
 
 
-def _rank_chunks(
-    query: str,
-    prepared: PreparedChunkRetriever,
-    query_vector: Sequence[float] | None,
-) -> list[tuple[Chunk, float]]:
-    primary_label_scores = bm25_scores(query, prepared.primary_label_index)
-    alias_scores = bm25_scores(query, prepared.alias_index)
-    content_scores = bm25_scores(query, prepared.content_index)
-    metadata_scores = bm25_scores(query, prepared.metadata_index)
-    semantic_scores = semantic_similarity_scores(
-        query_vector,
-        prepared.chunk_vectors,
-    )
 
-    ranked = []
-    for chunk in prepared.chunks_by_id.values():
-        score = (
-            primary_label_scores.get(chunk.id, 0.0) * PRIMARY_LABEL_BM25_WEIGHT
-            + alias_scores.get(chunk.id, 0.0) * ALIAS_BM25_WEIGHT
-            + content_scores.get(chunk.id, 0.0) * CONTENT_BM25_WEIGHT
-            + metadata_scores.get(chunk.id, 0.0) * METADATA_BM25_WEIGHT
-            + semantic_scores.get(chunk.id, 0.0) * SEMANTIC_CHUNK_WEIGHT
-        )
-        if score > 0:
-            ranked.append((chunk, score))
-    ranked.sort(key=lambda item: (-item[1], item[0].index, item[0].id))
-    return ranked

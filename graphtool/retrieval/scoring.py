@@ -3,6 +3,9 @@ from collections.abc import Mapping, Sequence
 
 from graphtool.retrieval.bm25 import BM25Document, BM25Index
 
+SEMANTIC_SIMILARITY_FLOOR = 0.70
+BM25_SATURATION = 6.0
+
 
 def bm25_index(text_by_id: Mapping[str, str]) -> BM25Index:
     return BM25Index(
@@ -14,40 +17,51 @@ def bm25_index(text_by_id: Mapping[str, str]) -> BM25Index:
 
 
 def bm25_scores(query: str, index: BM25Index) -> dict[str, float]:
-    return normalize_scores(
+    return calibrate_bm25_scores(
         {document.id: score for document, score in index.rank(query)}
     )
 
 
-def normalize_scores(scores: Mapping[str, float]) -> dict[str, float]:
-    positive_scores = {
-        item_id: score
+def calibrate_bm25_score(score: float) -> float:
+    """Map a raw BM25 score onto [0, 1) against a fixed reference point, so
+    scores stay comparable across separate indexes and candidate sets."""
+    return score / (score + BM25_SATURATION)
+
+
+def calibrate_bm25_scores(scores: Mapping[str, float]) -> dict[str, float]:
+    return {
+        item_id: calibrate_bm25_score(score)
         for item_id, score in scores.items()
         if score > 0.0
     }
-    if not positive_scores:
-        return {}
-    max_score = max(positive_scores.values())
-    return {
-        item_id: score / max_score
-        for item_id, score in positive_scores.items()
-    }
 
 
-def min_max_normalize_scores(scores: Mapping[str, float]) -> dict[str, float]:
-    """Stretch scores across [0, 1]. Unlike normalize_scores, this suits
-    cosine similarities, whose high floor leaves divide-by-max scores
-    compressed near 1.0."""
-    if not scores:
-        return {}
-    min_score = min(scores.values())
-    max_score = max(scores.values())
-    if max_score == min_score:
-        return {item_id: 1.0 for item_id in scores}
-    return {
-        item_id: (score - min_score) / (max_score - min_score)
-        for item_id, score in scores.items()
-    }
+def combine_weighted_scores(
+    contributions: Sequence[tuple[float, float]],
+) -> float:
+    """Combine independent calibrated signals into [0, 1). Averaging instead
+    divides by every weight that could theoretically fire, which no real query
+    does, so a chunk matching one field strongly would score near zero.
+
+    A signal reaching 1.0 at the heaviest weight zeroes the product and pins
+    the result at 1.0, hiding every other signal, so callers must keep
+    saturating signals below the heaviest weight."""
+    max_weight = max(weight for _, weight in contributions)
+    remaining = 1.0
+    for score, weight in contributions:
+        remaining *= 1.0 - score * weight / max_weight
+    return 1.0 - remaining
+
+
+def calibrate_similarity(similarity: float) -> float:
+    """Rescale a cosine similarity against a fixed floor. Unrelated text still
+    scores well above zero with these embeddings, so the floor is what makes a
+    calibrated score mean the same thing on every query."""
+    return max(
+        0.0,
+        (similarity - SEMANTIC_SIMILARITY_FLOOR)
+        / (1.0 - SEMANTIC_SIMILARITY_FLOOR),
+    )
 
 
 def cosine_similarity(
@@ -71,11 +85,12 @@ def semantic_similarity_scores(
 ) -> dict[str, float]:
     if query_vector is None:
         return {}
-    positive_scores = {
+    return {
         item_id: score
         for item_id, vector in vectors.items()
-        if (score := cosine_similarity(query_vector, vector)) > 0.0
+        if (
+            score := calibrate_similarity(
+                cosine_similarity(query_vector, vector)
+            )
+        ) > 0.0
     }
-    return min_max_normalize_scores(
-        positive_scores
-    )

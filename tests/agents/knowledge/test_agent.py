@@ -286,6 +286,7 @@ def _chunk_hit(chunk):
     return ChunkHit(
         chunk=chunk,
         score=1.0,
+        relevance=1.0,
         linked_nodes=[],
         linked_relationships=[],
     )

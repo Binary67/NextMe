@@ -22,6 +22,7 @@ def _hit(chunk: Chunk) -> ChunkHit:
     return ChunkHit(
         chunk=chunk,
         score=1.0,
+        relevance=1.0,
         linked_nodes=[],
         linked_relationships=[],
     )
