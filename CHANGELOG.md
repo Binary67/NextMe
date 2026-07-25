@@ -4,6 +4,42 @@ This changelog records changes from July 24, 2026 onward. Each entry explains
 the intention behind the work and the features or code changes that implemented
 it.
 
+## July 25, 2026
+
+### Intention
+
+- Improve proper-noun reliability without requiring users to maintain
+  pronunciations or transcription variants.
+- Keep automatic corrections auditable and reversible while preserving the raw
+  transcript.
+- Let human decisions rebuild derived transcripts without another transcription
+  request.
+- Support only the current generated-data formats while the project remains in
+  active development.
+
+### Changes implemented
+
+- Added a structured fast-model correction pass after audio transcription.
+- Restricted corrections to exact canonical terms from
+  `config/transcription_glossary.json`, uniquely located source text, and
+  non-overlapping substitutions.
+- Added a per-recording `corrections.jsonl` ledger with `apply`, `review`, and
+  `reject` decisions plus a `reviewed` marker.
+- Kept raw transcript chunks immutable and made assembled Markdown a derived
+  artifact of the raw chunks and active correction ledger.
+- Made ledger edits and row deletion rebuild Markdown without rerunning audio
+  transcription or correction generation.
+- Preserved reviewed decisions when correction proposals are regenerated.
+- Added correction-model and ledger hashes to audio manifests while requiring
+  the current manifest schema rather than migrating legacy cache data.
+- Wired the runtime fast model into audio ingestion and documented the glossary
+  and correction review workflow in `README.md`.
+- Added focused tests for automatic application, deferred review, rejection,
+  deletion, raw-chunk preservation, cache reuse, reviewed-decision retention,
+  and non-glossary replacement rejection.
+- Added `AGENTS.md` to prohibit migrations and compatibility paths for generated
+  development data unless explicitly requested.
+
 ## July 24, 2026
 
 ### Intention

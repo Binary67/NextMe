@@ -24,6 +24,7 @@ def main() -> None:
             pdf_cache_dir=runtime.paths.pdf_conversions_dir,
             presentation_cache_dir=runtime.paths.presentation_conversions_dir,
             audio_transcriber=runtime.audio_transcriber,
+            audio_corrector=runtime.fast_llm,
             audio_cache_dir=runtime.paths.audio_transcriptions_dir,
             audio_transcription_terms=audio_transcription_terms,
         )

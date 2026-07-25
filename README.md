@@ -85,17 +85,30 @@ Copy `config/transcription_glossary.example.json` to
 `config/transcription_glossary.json`, then add names, project names, acronyms,
 and other expected proper nouns. The local glossary is gitignored so personal
 terms are not committed. If it does not exist, ingestion uses an empty list.
-Each entry is sent to the transcription model as an exact-spelling hint.
-Pronunciation notes are optional and can be written in parentheses:
+Each entry is a canonical spelling sent to the transcription model as a hint
+and to the fast model for a constrained correction pass:
 
 ```json
 {
   "terms": [
-    "HIP-SA (pronounced \"hip sah\")",
+    "HIP-SA",
     "Aishwarya Rao"
   ]
 }
 ```
+
+The raw transcript chunks remain unchanged. Proposed proper-noun substitutions
+are stored in `corrections.jsonl` beside each recording's cached chunks. An
+`apply` correction is included in the assembled Markdown, while `review` and
+`reject` corrections are not. To undo an automatic correction, change its
+`decision` to `reject` and set `reviewed` to `true`. Deleting the row also
+removes the correction, but a reviewed rejection is retained if correction
+proposals are regenerated.
+
+Editing `corrections.jsonl` rebuilds the Markdown from the raw chunks without
+rerunning audio transcription. Only exact replacements with terms still in the
+glossary are applied. The correction records are local generated data and are
+not used to train or update the models.
 
 Changing the glossary invalidates cached audio transcripts so they are
 transcribed again with the updated terms.

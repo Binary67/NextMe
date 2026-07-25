@@ -14,6 +14,7 @@ def test_load_documents_returns_empty_for_missing_directory(tmp_path):
         pdf_cache_dir=tmp_path / "cache",
         presentation_cache_dir=tmp_path / "presentation-cache",
         audio_transcriber=object(),
+        audio_corrector=object(),
         audio_cache_dir=tmp_path / "audio-cache",
         audio_transcription_terms=[],
     )
@@ -71,6 +72,7 @@ def test_load_documents_reads_markdown_and_converts_pdf_and_pptx(
         pdf_cache_dir=cache_dir,
         presentation_cache_dir=presentation_cache_dir,
         audio_transcriber=object(),
+        audio_corrector=object(),
         audio_cache_dir=tmp_path / "audio-cache",
         audio_transcription_terms=[],
     )
@@ -129,6 +131,7 @@ def test_load_documents_does_not_return_partial_results_on_pdf_failure(
             pdf_cache_dir=tmp_path / "cache",
             presentation_cache_dir=tmp_path / "presentation-cache",
             audio_transcriber=object(),
+            audio_corrector=object(),
             audio_cache_dir=tmp_path / "audio-cache",
             audio_transcription_terms=[],
         )
@@ -142,8 +145,8 @@ def test_load_documents_converts_nested_audio(monkeypatch, tmp_path):
     audio_path.write_bytes(b"audio")
     calls = []
 
-    def fake_convert(path, source, transcriber, cache_dir, terms):
-        calls.append((path, source, transcriber, cache_dir, terms))
+    def fake_convert(path, source, transcriber, corrector, cache_dir, terms):
+        calls.append((path, source, transcriber, corrector, cache_dir, terms))
         return "# Transcript: customer.MP3\n\nInterview text.\n"
 
     monkeypatch.setattr(
@@ -151,6 +154,7 @@ def test_load_documents_converts_nested_audio(monkeypatch, tmp_path):
         fake_convert,
     )
     transcriber = object()
+    corrector = object()
     cache_dir = tmp_path / "audio-cache"
 
     documents = load_documents(
@@ -160,6 +164,7 @@ def test_load_documents_converts_nested_audio(monkeypatch, tmp_path):
         pdf_cache_dir=tmp_path / "pdf-cache",
         presentation_cache_dir=tmp_path / "presentation-cache",
         audio_transcriber=transcriber,
+        audio_corrector=corrector,
         audio_cache_dir=cache_dir,
         audio_transcription_terms=["HIP-SA"],
     )
@@ -174,6 +179,7 @@ def test_load_documents_converts_nested_audio(monkeypatch, tmp_path):
             audio_path,
             "documents/recordings/interviews/customer.MP3",
             transcriber,
+            corrector,
             cache_dir,
             ["HIP-SA"],
         )

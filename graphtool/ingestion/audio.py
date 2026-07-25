@@ -6,10 +6,12 @@ import subprocess
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel
 
-from graphtool.llm.base import AudioTranscriptionClient
+from graphtool.llm.base import AudioTranscriptionClient, LLMClient
+from graphtool.llm.types import LLMMessage
 from graphtool.source import source_key
 
 AUDIO_CHUNK_MILLISECONDS = 20 * 60 * 1000
@@ -20,6 +22,7 @@ AUDIO_MAX_CHUNK_BYTES = 24_000_000
 AUDIO_CONTEXT_TAIL_CHARS = 500
 AUDIO_TRANSCRIPTION_FORMAT_REVISION = 3
 AUDIO_ASSEMBLY_REVISION = 1
+AUDIO_CORRECTION_REVISION = 1
 _MIN_OVERLAP_MATCH_TOKENS = 5
 _MAX_OVERLAP_WINDOW_TOKENS = 100
 _MIN_OVERLAP_SIMILARITY = 0.65
@@ -36,12 +39,38 @@ class _AudioTranscriptionGlossary(BaseModel):
     terms: list[str]
 
 
+class _AudioTranscriptCorrectionProposal(BaseModel):
+    original: str
+    replacement: str
+    context: str
+    decision: Literal["apply", "review"]
+
+
+class _AudioTranscriptCorrectionProposals(BaseModel):
+    corrections: list[_AudioTranscriptCorrectionProposal]
+
+
+class AudioTranscriptCorrection(BaseModel):
+    id: str
+    source: str
+    chunk: int
+    original: str
+    replacement: str
+    context: str
+    decision: Literal["apply", "review", "reject"]
+    reviewed: bool = False
+
+
 class _AudioConversionManifest(BaseModel):
     source_hash: str
     model: str
-    glossary_hash: str = ""
+    glossary_hash: str
+    correction_model: str
+    correction_revision: int
+    correction_input_hash: str
+    corrections_hash: str
     format_revision: int
-    assembly_revision: int = 0
+    assembly_revision: int
     chunk_milliseconds: int
     overlap_milliseconds: int
     sample_rate: int
@@ -56,6 +85,7 @@ def convert_audio_to_markdown(
     path: str | Path,
     source: str,
     transcriber: AudioTranscriptionClient,
+    corrector: LLMClient,
     cache_dir: str | Path,
     terms: Sequence[str],
 ) -> str:
@@ -68,17 +98,41 @@ def convert_audio_to_markdown(
     source_cache_dir = Path(cache_dir) / source_key(source)
     manifest_path = source_cache_dir / "manifest.json"
     markdown_path = source_cache_dir / "document.md"
+    corrections_path = source_cache_dir / "corrections.jsonl"
+    corrections, corrections_content = _load_corrections(corrections_path)
     manifest = _load_manifest(manifest_path)
     if manifest is not None and _same_source_and_settings(
         manifest,
         source_hash,
         transcriber.transcription_model,
         glossary_hash,
+        corrector.text_model,
     ):
         if manifest.complete and markdown_path.exists():
             markdown = markdown_path.read_text(encoding="utf-8")
-            if _text_hash(markdown) == manifest.markdown_hash:
+            corrections_hash = _text_hash(corrections_content)
+            if (
+                _text_hash(markdown) == manifest.markdown_hash
+                and corrections_hash == manifest.corrections_hash
+            ):
                 return markdown
+            chunks = _load_cached_chunks(source_cache_dir, manifest, source)
+            markdown = _assemble_markdown(
+                audio_path.name,
+                source,
+                chunks,
+                corrections,
+                terms,
+            )
+            _write_text_atomic(markdown_path, markdown)
+            completed_manifest = manifest.model_copy(
+                update={
+                    "corrections_hash": corrections_hash,
+                    "markdown_hash": _text_hash(markdown),
+                }
+            )
+            _write_model_atomic(manifest_path, completed_manifest)
+            return markdown
 
     ffprobe = shutil.which("ffprobe")
     if ffprobe is None:
@@ -89,6 +143,10 @@ def convert_audio_to_markdown(
         source_hash=source_hash,
         model=transcriber.transcription_model,
         glossary_hash=glossary_hash,
+        correction_model=corrector.text_model,
+        correction_revision=AUDIO_CORRECTION_REVISION,
+        correction_input_hash="",
+        corrections_hash="",
         format_revision=AUDIO_TRANSCRIPTION_FORMAT_REVISION,
         assembly_revision=AUDIO_ASSEMBLY_REVISION,
         chunk_milliseconds=AUDIO_CHUNK_MILLISECONDS,
@@ -161,10 +219,45 @@ def convert_audio_to_markdown(
                 _write_model_atomic(chunk_cache_path, chunk)
             chunks.append(chunk)
 
-    markdown = _assemble_markdown(audio_path.name, chunks)
+    correction_input_hash = _correction_input_hash(chunks, terms, corrector)
+    corrections_are_stale = (
+        manifest is None
+        or manifest.correction_input_hash != correction_input_hash
+        or manifest.correction_model != corrector.text_model
+        or manifest.correction_revision != AUDIO_CORRECTION_REVISION
+    )
+    if corrections_are_stale:
+        generated_corrections = _generate_corrections(
+            source,
+            chunks,
+            terms,
+            corrector,
+        )
+        corrections = _merge_corrections(
+            generated_corrections,
+            corrections,
+            source,
+            chunks,
+            terms,
+        )
+        corrections_content = _serialize_corrections(corrections)
+        _write_text_atomic(corrections_path, corrections_content)
+
+    markdown = _assemble_markdown(
+        audio_path.name,
+        source,
+        chunks,
+        corrections,
+        terms,
+    )
     _write_text_atomic(markdown_path, markdown)
     completed_manifest = expected_manifest.model_copy(
-        update={"complete": True, "markdown_hash": _text_hash(markdown)}
+        update={
+            "complete": True,
+            "correction_input_hash": correction_input_hash,
+            "corrections_hash": _text_hash(corrections_content),
+            "markdown_hash": _text_hash(markdown),
+        }
     )
     _write_model_atomic(manifest_path, completed_manifest)
     return markdown
@@ -184,6 +277,210 @@ def load_audio_transcription_terms(path: str | Path) -> list[str]:
             "contains an empty term."
         )
     return terms
+
+
+def _load_corrections(
+    path: Path,
+) -> tuple[list[AudioTranscriptCorrection], str]:
+    if not path.exists():
+        return [], ""
+    content = path.read_text(encoding="utf-8")
+    corrections = []
+    for line_number, line in enumerate(content.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            correction = AudioTranscriptCorrection.model_validate_json(line)
+        except ValueError as exc:
+            raise ValueError(
+                f"Audio correction ledger {str(path)!r} has an invalid "
+                f"record on line {line_number}."
+            ) from exc
+        corrections.append(correction)
+    return corrections, content
+
+
+def _serialize_corrections(
+    corrections: Sequence[AudioTranscriptCorrection],
+) -> str:
+    ordered = sorted(corrections, key=lambda item: (item.chunk, item.id))
+    if not ordered:
+        return ""
+    return "\n".join(item.model_dump_json() for item in ordered) + "\n"
+
+
+def _correction_input_hash(
+    chunks: Sequence[AudioTranscriptChunk],
+    terms: Sequence[str],
+    corrector: LLMClient,
+) -> str:
+    values = [
+        corrector.text_model,
+        str(AUDIO_CORRECTION_REVISION),
+        *terms,
+        *(f"{chunk.index}:{_text_hash(chunk.text)}" for chunk in chunks),
+    ]
+    return _text_hash("\0".join(values))
+
+
+def _generate_corrections(
+    source: str,
+    chunks: Sequence[AudioTranscriptChunk],
+    terms: Sequence[str],
+    corrector: LLMClient,
+) -> list[AudioTranscriptCorrection]:
+    if not terms:
+        return []
+    term_list = "\n".join(f"- {term}" for term in terms)
+    corrections = []
+    for chunk in chunks:
+        proposals = corrector.generate_structured(
+            (
+                LLMMessage(
+                    role="system",
+                    content=(
+                        "Find only proper-noun spelling discrepancies in an "
+                        "audio transcript. Propose exact substring replacements "
+                        "using the canonical terms supplied by the user. Do not "
+                        "change punctuation, grammar, numbers, or wording. Set "
+                        "decision to apply only when the intended canonical term "
+                        "is unambiguous; otherwise set it to review. Context must "
+                        "be the shortest exact excerpt from the transcript that "
+                        "contains one occurrence of original and uniquely "
+                        "identifies it."
+                    ),
+                ),
+                LLMMessage(
+                    role="user",
+                    content=(
+                        f"Canonical terms:\n{term_list}\n\n"
+                        f"Transcript:\n{chunk.text}"
+                    ),
+                ),
+            ),
+            _AudioTranscriptCorrectionProposals,
+        )
+        chunk_corrections = []
+        for proposal in proposals.corrections:
+            original = proposal.original.strip()
+            replacement = proposal.replacement.strip()
+            context = proposal.context.strip()
+            if (
+                not original
+                or not context
+                or original == replacement
+                or replacement not in terms
+            ):
+                continue
+            correction = AudioTranscriptCorrection(
+                id=_correction_id(
+                    source,
+                    chunk.index,
+                    original,
+                    replacement,
+                    context,
+                ),
+                source=source,
+                chunk=chunk.index,
+                original=original,
+                replacement=replacement,
+                context=context,
+                decision=proposal.decision,
+            )
+            if _locate_correction(chunk.text, correction) is not None:
+                chunk_corrections.append(correction)
+        corrections.extend(
+            _mark_overlapping_corrections_for_review(
+                chunk.text,
+                chunk_corrections,
+            )
+        )
+    return corrections
+
+
+def _correction_id(
+    source: str,
+    chunk: int,
+    original: str,
+    replacement: str,
+    context: str,
+) -> str:
+    value = "\0".join((source, str(chunk), original, replacement, context))
+    return _text_hash(value)[:16]
+
+
+def _locate_correction(
+    text: str,
+    correction: AudioTranscriptCorrection,
+) -> tuple[int, int] | None:
+    if text.count(correction.context) != 1:
+        return None
+    if correction.context.count(correction.original) != 1:
+        return None
+    context_start = text.index(correction.context)
+    start = context_start + correction.context.index(correction.original)
+    return start, start + len(correction.original)
+
+
+def _mark_overlapping_corrections_for_review(
+    text: str,
+    corrections: Sequence[AudioTranscriptCorrection],
+) -> list[AudioTranscriptCorrection]:
+    located = []
+    for correction in corrections:
+        text_range = _locate_correction(text, correction)
+        assert text_range is not None
+        located.append((text_range, correction))
+    overlapping_ids = _overlapping_correction_ids(located)
+    return [
+        correction.model_copy(update={"decision": "review"})
+        if correction.id in overlapping_ids
+        else correction
+        for correction in corrections
+    ]
+
+
+def _merge_corrections(
+    generated: Sequence[AudioTranscriptCorrection],
+    existing: Sequence[AudioTranscriptCorrection],
+    source: str,
+    chunks: Sequence[AudioTranscriptChunk],
+    terms: Sequence[str],
+) -> list[AudioTranscriptCorrection]:
+    chunk_text = {chunk.index: chunk.text for chunk in chunks}
+    reviewed = {}
+    for correction in existing:
+        if (
+            not correction.reviewed
+            or correction.source != source
+            or correction.replacement not in terms
+        ):
+            continue
+        text = chunk_text.get(correction.chunk)
+        if text is None or _locate_correction(text, correction) is None:
+            continue
+        reviewed[correction.id] = correction
+
+    merged = {
+        correction.id: reviewed.get(correction.id, correction)
+        for correction in generated
+    }
+    for correction_id, correction in reviewed.items():
+        merged.setdefault(correction_id, correction)
+    return list(merged.values())
+
+
+def _overlapping_correction_ids(
+    located: Sequence[tuple[tuple[int, int], AudioTranscriptCorrection]],
+) -> set[str]:
+    ordered = sorted(located, key=lambda item: item[0])
+    overlapping_ids = set()
+    for index, (current_range, current) in enumerate(ordered):
+        for other_range, other in ordered[index + 1 :]:
+            if other_range[0] >= current_range[1]:
+                break
+            overlapping_ids.update((current.id, other.id))
+    return overlapping_ids
 
 
 def _probe_duration(audio_path: Path, source: str, ffprobe: str) -> int:
@@ -294,20 +591,91 @@ def _context_prompt(
     return f"{glossary_prompt}\n\nPrevious transcript context:\n{previous_context}"
 
 
+def _load_cached_chunks(
+    source_cache_dir: Path,
+    manifest: _AudioConversionManifest,
+    source: str,
+) -> list[AudioTranscriptChunk]:
+    boundaries = _chunk_boundaries(manifest.duration_milliseconds)
+    if len(boundaries) != manifest.chunk_count:
+        raise ValueError(
+            f"Cached audio transcription for {source!r} has unexpected boundaries."
+        )
+    chunks = []
+    for index, (start_milliseconds, end_milliseconds) in enumerate(boundaries):
+        chunk_path = source_cache_dir / "chunks" / f"{index:05d}.json"
+        if not chunk_path.exists():
+            raise ValueError(
+                f"Cached audio transcription for {source!r} is missing "
+                f"chunk {index}."
+            )
+        chunk = AudioTranscriptChunk.model_validate_json(
+            chunk_path.read_text(encoding="utf-8")
+        )
+        chunks.append(
+            _validate_chunk(
+                chunk,
+                index,
+                start_milliseconds,
+                end_milliseconds,
+                source,
+            )
+        )
+    return chunks
+
+
 def _assemble_markdown(
     file_name: str,
+    source: str,
     chunks: list[AudioTranscriptChunk],
+    corrections: Sequence[AudioTranscriptCorrection],
+    terms: Sequence[str],
 ) -> str:
     blocks = [f"# Transcript: {file_name}"]
     previous_text = ""
     for chunk in chunks:
-        text = _remove_fuzzy_overlap(previous_text, chunk.text)
+        corrected_text = _apply_corrections(
+            source,
+            chunk,
+            corrections,
+            terms,
+        )
+        text = _remove_fuzzy_overlap(previous_text, corrected_text)
         if text:
             blocks.append(
                 f"## {_format_timestamp(chunk.start_milliseconds)}\n\n{text}"
             )
-        previous_text = chunk.text
+        previous_text = corrected_text
     return "\n\n".join(blocks).rstrip() + "\n"
+
+
+def _apply_corrections(
+    source: str,
+    chunk: AudioTranscriptChunk,
+    corrections: Sequence[AudioTranscriptCorrection],
+    terms: Sequence[str],
+) -> str:
+    located = []
+    for correction in corrections:
+        if (
+            correction.source != source
+            or correction.chunk != chunk.index
+            or correction.decision != "apply"
+            or correction.replacement not in terms
+        ):
+            continue
+        text_range = _locate_correction(chunk.text, correction)
+        if text_range is not None:
+            located.append((text_range, correction))
+
+    overlapping_ids = _overlapping_correction_ids(located)
+
+    text = chunk.text
+    ordered = sorted(located, key=lambda item: item[0])
+    for (start, end), correction in reversed(ordered):
+        if correction.id not in overlapping_ids:
+            text = f"{text[:start]}{correction.replacement}{text[end:]}"
+    return text
 
 
 def _remove_fuzzy_overlap(previous: str, current: str) -> str:
@@ -453,11 +821,14 @@ def _same_source_and_settings(
     source_hash: str,
     model: str,
     glossary_hash: str,
+    correction_model: str,
 ) -> bool:
     return (
         manifest.source_hash == source_hash
         and manifest.model == model
         and manifest.glossary_hash == glossary_hash
+        and manifest.correction_model == correction_model
+        and manifest.correction_revision == AUDIO_CORRECTION_REVISION
         and manifest.format_revision == AUDIO_TRANSCRIPTION_FORMAT_REVISION
         and manifest.assembly_revision == AUDIO_ASSEMBLY_REVISION
         and manifest.chunk_milliseconds == AUDIO_CHUNK_MILLISECONDS

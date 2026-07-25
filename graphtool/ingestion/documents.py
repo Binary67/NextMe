@@ -31,6 +31,7 @@ def load_documents(
     pdf_cache_dir: str | Path,
     presentation_cache_dir: str | Path,
     audio_transcriber: AudioTranscriptionClient,
+    audio_corrector: LLMClient,
     audio_cache_dir: str | Path,
     audio_transcription_terms: Sequence[str],
 ) -> dict[str, str]:
@@ -116,6 +117,7 @@ def load_documents(
                 document_path,
                 source,
                 audio_transcriber,
+                audio_corrector,
                 audio_cache_dir,
                 audio_transcription_terms,
             )

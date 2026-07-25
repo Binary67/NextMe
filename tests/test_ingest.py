@@ -94,6 +94,7 @@ def test_main_synchronizes_documents_and_exports_visualizations(
         pdf_cache_dir=paths.pdf_conversions_dir,
         presentation_cache_dir=paths.presentation_conversions_dir,
         audio_transcriber=runtime.audio_transcriber,
+        audio_corrector=runtime.fast_llm,
         audio_cache_dir=paths.audio_transcriptions_dir,
         audio_transcription_terms=[],
     )
