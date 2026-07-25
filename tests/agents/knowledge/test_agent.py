@@ -12,9 +12,11 @@ from graphtool.agents.knowledge import workflow_graph
 from graphtool.agents.knowledge.prompts import NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
 from graphtool.agents.knowledge.state import (
     ConversationSummary,
+    ExpandRecommendation,
     FinalAnswerDraft,
     GraphPathEvidenceRecord,
     QueryDecomposition,
+    SearchRecommendation,
     SufficiencyDecision,
 )
 from graphtool.chunking.types import Chunk
@@ -195,6 +197,13 @@ def _tool_call(name, **arguments):
     )
 
 
+def _multiple_tool_calls(*calls):
+    return AIMessage(
+        content="",
+        tool_calls=[call.tool_calls[0] for call in calls],
+    )
+
+
 def _search_call(query, sources=None):
     arguments = {"query": query}
     if sources is not None:
@@ -216,6 +225,29 @@ def _neighborhood_call(source, chunk_id):
 
 def _direct_response(text):
     return AIMessage(content=text)
+
+
+def _insufficient_search(missing_information, *, focus=None):
+    return SufficiencyDecision(
+        verdict="insufficient",
+        missing_information=[missing_information],
+        recommendation=SearchRecommendation(
+            reason="A different passage is needed.",
+            search_focus=focus or missing_information,
+        ),
+    )
+
+
+def _insufficient_expand(missing_information, source, chunk_id):
+    return SufficiencyDecision(
+        verdict="insufficient",
+        missing_information=[missing_information],
+        recommendation=ExpandRecommendation(
+            reason="The adjacent document context is likely to complete the passage.",
+            source=source,
+            chunk_id=chunk_id,
+        ),
+    )
 
 
 def _document_result(query, *sources):
@@ -503,9 +535,9 @@ def test_agent_discovers_document_then_searches_only_that_source():
                 _search_call("database used", sources=[source]),
             ],
             SufficiencyDecision: [
-                SufficiencyDecision(
-                    verdict="insufficient",
-                    missing_information="The document was found but its database is missing.",
+                _insufficient_search(
+                    "The document was found but its database is missing.",
+                    focus="database used in the identified document",
                 ),
                 SufficiencyDecision(verdict="sufficient"),
             ],
@@ -582,14 +614,8 @@ def test_agent_rejects_source_not_returned_by_document_discovery():
                 _search_call("database", sources=[allowed_source]),
             ],
             SufficiencyDecision: [
-                SufficiencyDecision(
-                    verdict="insufficient",
-                    missing_information="The database details are missing.",
-                ),
-                SufficiencyDecision(
-                    verdict="insufficient",
-                    missing_information="No authorized passage was retrieved.",
-                ),
+                _insufficient_search("The database details are missing."),
+                _insufficient_search("No authorized passage was retrieved."),
                 SufficiencyDecision(verdict="sufficient"),
             ],
             FinalAnswerDraft: [
@@ -724,9 +750,9 @@ def test_agent_reformulates_search_after_insufficient_evidence():
                 _search_call("Azure OpenAI decision rationale"),
             ],
             SufficiencyDecision: [
-                SufficiencyDecision(
-                    verdict="insufficient",
-                    missing_information="The reason for the decision is missing.",
+                _insufficient_search(
+                    "The reason for the decision is missing.",
+                    focus="Azure OpenAI decision rationale",
                 ),
                 SufficiencyDecision(verdict="sufficient"),
             ],
@@ -766,9 +792,9 @@ def test_agent_corrects_missing_follow_up_tool_call():
                 _search_call("Azure OpenAI decision rationale"),
             ],
             SufficiencyDecision: [
-                SufficiencyDecision(
-                    verdict="insufficient",
-                    missing_information="The reason for the decision is missing.",
+                _insufficient_search(
+                    "The reason for the decision is missing.",
+                    focus="Azure OpenAI decision rationale",
                 ),
                 SufficiencyDecision(verdict="sufficient"),
             ],
@@ -814,9 +840,9 @@ def test_agent_returns_partial_evidence_when_follow_up_research_times_out():
                 timeout,
             ],
             SufficiencyDecision: [
-                SufficiencyDecision(
-                    verdict="insufficient",
-                    missing_information="The reason for the decision is missing.",
+                _insufficient_search(
+                    "The reason for the decision is missing.",
+                    focus="Azure OpenAI decision rationale",
                 )
             ],
             FinalAnswerDraft: [
@@ -852,9 +878,10 @@ def test_agent_retrieves_allowed_chunk_neighborhood_as_cited_evidence():
                 _neighborhood_call("docs/guide.md", "guide-0001"),
             ],
             SufficiencyDecision: [
-                SufficiencyDecision(
-                    verdict="insufficient",
-                    missing_information="The surrounding procedure is missing.",
+                _insufficient_expand(
+                    "The surrounding procedure is missing.",
+                    "docs/guide.md",
+                    "guide-0001",
                 ),
                 SufficiencyDecision(verdict="sufficient"),
             ],
@@ -1010,12 +1037,13 @@ def test_graph_path_evidence_is_deduplicated_across_subquestions():
         }
     )
 
-    merged = workflow_graph._merge_graph_path_evidence_record(
+    merged, is_new = workflow_graph._merge_graph_path_evidence_record(
         [first],
         duplicate,
         1,
     )
 
+    assert not is_new
     assert len(merged) == 1
     assert merged[0].subquestion_indexes == [0, 1]
 
@@ -1028,10 +1056,6 @@ def test_agent_rejects_neighborhood_that_was_not_returned_by_search():
                 _search_call("GraphTool provider"),
             ],
             SufficiencyDecision: [
-                SufficiencyDecision(
-                    verdict="insufficient",
-                    missing_information="No authorized evidence was retrieved.",
-                ),
                 SufficiencyDecision(verdict="sufficient"),
             ],
             FinalAnswerDraft: [
@@ -1050,21 +1074,141 @@ def test_agent_rejects_neighborhood_that_was_not_returned_by_search():
     assert runtime.chunk_store.calls == []
     assert runtime.search_calls == ["GraphTool provider"]
     assert response.search_count == 1
+    corrective_call = model.calls[ToolModelResponse][1]
+    assert "recommended action is search" in corrective_call[-1].content
 
 
-def test_agent_stops_after_two_searches_without_progress(caplog):
+def test_agent_falls_back_to_search_when_recommended_expansion_is_unavailable():
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _search_call("deployment procedure"),
+                _search_call("deployment final step"),
+            ],
+            SufficiencyDecision: [
+                _insufficient_expand(
+                    "The final deployment step is missing.",
+                    "docs/guide.md",
+                    "unknown-chunk",
+                ),
+                SufficiencyDecision(verdict="sufficient"),
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="The final deployment step is documented.",
+                    cited_reference_ids=["S2"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [
+            _result("deployment procedure", page=1),
+            _result("deployment final step", page=2),
+        ]
+    )
+    agent = create_knowledge_agent(model, model, runtime)
+
+    response = agent.ask(
+        "What is the complete deployment procedure?",
+        thread_id="thread-1",
+    )
+
+    assert response.status == "complete"
+    assert runtime.chunk_store.calls == []
+    assert runtime.search_calls == [
+        "deployment procedure",
+        "deployment final step",
+    ]
+    second_research_context = model.calls[ToolModelResponse][1][1].content
+    assert "Recommended action: search" in str(second_research_context)
+
+
+def test_agent_corrects_duplicate_search_without_spending_retrieval_budget():
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _search_call("provider"),
+                _search_call("provider"),
+                _search_call("provider approver"),
+            ],
+            SufficiencyDecision: [
+                _insufficient_search(
+                    "The provider approver is missing.",
+                    focus="provider approver",
+                ),
+                SufficiencyDecision(verdict="sufficient"),
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="The provider and approver are documented.",
+                    cited_reference_ids=["S1", "S2"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [
+            _result("provider", page=1),
+            _result("provider approver", page=2),
+        ]
+    )
+    agent = create_knowledge_agent(model, model, runtime)
+
+    response = agent.ask("Who approved the provider?", thread_id="thread-1")
+
+    assert response.status == "complete"
+    assert response.search_count == 2
+    assert runtime.search_calls == ["provider", "provider approver"]
+    correction = model.calls[ToolModelResponse][2][-1].content
+    assert "already attempted" in correction
+
+
+def test_agent_corrects_multiple_initial_tool_calls():
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _multiple_tool_calls(
+                    _search_call("provider"),
+                    _search_call("approver"),
+                ),
+                _search_call("provider"),
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(verdict="sufficient")
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="The provider is documented.",
+                    cited_reference_ids=["S1"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime([_result("provider")])
+    agent = create_knowledge_agent(model, model, runtime)
+
+    response = agent.ask("Which provider is used?", thread_id="thread-1")
+
+    assert response.status == "complete"
+    assert runtime.search_calls == ["provider"]
+    correction = model.calls[ToolModelResponse][1][-1].content
+    assert correction == (
+        "Call exactly one retrieval tool. Do not call multiple tools or answer "
+        "with prose."
+    )
+
+
+def test_agent_continues_when_each_search_adds_one_new_chunk(caplog):
     caplog.set_level(logging.INFO, logger=workflow_graph.RUN_LOGGER.name)
     model = ScriptedModel(
         {
             ToolModelResponse: [
-                _search_call(f"query {index}") for index in range(1, 3)
+                _search_call(f"query {index}") for index in range(1, 4)
             ],
             SufficiencyDecision: [
-                SufficiencyDecision(
-                    verdict="insufficient",
-                    missing_information="The final decision is not recorded.",
-                )
-                for _ in range(2)
+                _insufficient_search("The final decision is not recorded.")
+                for _ in range(3)
             ],
             FinalAnswerDraft: [
                 FinalAnswerDraft(
@@ -1078,17 +1222,17 @@ def test_agent_stops_after_two_searches_without_progress(caplog):
         }
     )
     runtime = FakeRuntime(
-        [_result(f"query {index}", page=index) for index in range(1, 3)]
+        [_result(f"query {index}", page=index) for index in range(1, 4)]
     )
     agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask("What was the final decision?", thread_id="thread-1")
 
     assert response.status == "partial"
-    assert response.search_count == 2
-    assert runtime.search_calls == ["query 1", "query 2"]
+    assert response.search_count == 3
+    assert runtime.search_calls == ["query 1", "query 2", "query 3"]
     assert any(
-        "Early stopping: unchanged evidence gap after 2 retrievals"
+        "Retrieval limit reached after 3 retrievals"
         in record.getMessage()
         for record in caplog.records
     )
@@ -1249,13 +1393,13 @@ def test_agent_continues_when_missing_information_changes():
                 _search_call("decision approver"),
             ],
             SufficiencyDecision: [
-                SufficiencyDecision(
-                    verdict="insufficient",
-                    missing_information="The decision date is missing.",
+                _insufficient_search(
+                    "The decision date is missing.",
+                    focus="decision date",
                 ),
-                SufficiencyDecision(
-                    verdict="insufficient",
-                    missing_information="The approver identity is missing.",
+                _insufficient_search(
+                    "The approver identity is missing.",
+                    focus="decision approver",
                 ),
                 SufficiencyDecision(verdict="sufficient"),
             ],
@@ -1319,10 +1463,7 @@ def test_agent_stops_at_three_retrievals_when_each_adds_evidence(caplog):
                 _search_call(f"query {index}") for index in range(1, 4)
             ],
             SufficiencyDecision: [
-                SufficiencyDecision(
-                    verdict="insufficient",
-                    missing_information="The final decision is not recorded.",
-                )
+                _insufficient_search("The final decision is not recorded.")
                 for _ in range(3)
             ],
             FinalAnswerDraft: [
@@ -1353,7 +1494,7 @@ def test_agent_stops_at_three_retrievals_when_each_adds_evidence(caplog):
     )
 
 
-def test_five_subquestions_each_stop_after_two_retrievals_without_progress():
+def test_five_subquestions_each_stop_after_two_empty_retrievals():
     subquestions = [f"Subquestion {index}?" for index in range(1, 6)]
     queries = [
         f"subquestion {subquestion_index} query {retrieval_index}"
@@ -1367,25 +1508,19 @@ def test_five_subquestions_each_stop_after_two_retrievals_without_progress():
             ],
             ToolModelResponse: [_search_call(query) for query in queries],
             SufficiencyDecision: [
-                SufficiencyDecision(
-                    verdict="insufficient",
-                    missing_information="The answer is missing.",
-                )
+                _insufficient_search("The answer is missing.")
                 for _ in queries
             ],
             FinalAnswerDraft: [
                 FinalAnswerDraft(
                     answer="The questions could not be fully answered.",
-                    cited_reference_ids=["S1"],
+                    cited_reference_ids=[],
                 )
             ],
         }
     )
     runtime = FakeRuntime(
-        [
-            _result(query, page=index)
-            for index, query in enumerate(queries, start=1)
-        ]
+        [_empty_result(query) for query in queries]
     )
     agent = create_knowledge_agent(model, model, runtime)
 
@@ -1448,10 +1583,7 @@ def test_evaluator_prevents_substantive_response_without_evidence():
                 _search_call("GraphTool provider"),
             ],
             SufficiencyDecision: [
-                SufficiencyDecision(
-                    verdict="insufficient",
-                    missing_information="No evidence was retrieved.",
-                ),
+                _insufficient_search("No evidence was retrieved."),
                 SufficiencyDecision(verdict="sufficient"),
             ],
             FinalAnswerDraft: [

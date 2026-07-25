@@ -1,5 +1,4 @@
 import logging
-import re
 from time import perf_counter
 
 from langchain_core.language_models import BaseChatModel
@@ -35,9 +34,11 @@ from graphtool.agents.knowledge.state import (
     ConversationSummary,
     DocumentEvidenceRecord,
     EvidenceRecord,
+    ExpandRecommendation,
     FinalAnswerDraft,
     GraphPathEvidenceRecord,
     QueryDecomposition,
+    SearchRecommendation,
     SubquestionOutcome,
     SufficiencyDecision,
 )
@@ -63,37 +64,16 @@ from graphtool.retrieval import SourceReference
 from graphtool.runtime import GraphToolRuntime
 
 MAX_RETRIEVALS_PER_SUBQUESTION = 3
-NO_PROGRESS_MIN_RETRIEVALS = 2
-NO_PROGRESS_MAX_NEW_EVIDENCE = 1
-MISSING_INFORMATION_SIMILARITY_THRESHOLD = 0.45
-MISSING_INFORMATION_STOP_WORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "available",
-    "be",
-    "does",
-    "evidence",
-    "for",
-    "from",
-    "information",
-    "is",
-    "missing",
-    "not",
-    "of",
-    "or",
-    "retrieved",
-    "that",
-    "the",
-    "this",
-    "to",
-}
+MAX_CONSECUTIVE_EMPTY_RETRIEVALS = 2
 RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 RESEARCH_TOOL_CORRECTION = (
     "Your previous response did not call a retrieval tool. The available "
     "evidence is insufficient, so call exactly one retrieval tool now. Do not "
     "answer with prose."
+)
+SINGLE_RESEARCH_TOOL_CORRECTION = (
+    "Call exactly one retrieval tool. Do not call multiple tools or answer "
+    "with prose."
 )
 NO_EVIDENCE_DISCLOSURE = (
     "I couldn't find supporting information in the knowledge base. The following "
@@ -268,10 +248,15 @@ def build_workflow_graph(
                 raise TypeError(
                     "Tool-bound research model must return an AIMessage."
                 )
-            if follow_up and not response.tool_calls:
+            correction = _research_response_correction(
+                state,
+                response,
+                follow_up=follow_up,
+            )
+            if correction is not None:
                 RUN_LOGGER.info(
-                    "Research round %d did not select a tool; retrying with a "
-                    "correction",
+                    "Research round %d selected an invalid action; retrying "
+                    "with a correction",
                     round_number,
                 )
                 response, correction_duration = _invoke_model(
@@ -279,7 +264,7 @@ def build_workflow_graph(
                     [
                         *research_messages,
                         response,
-                        HumanMessage(content=RESEARCH_TOOL_CORRECTION),
+                        HumanMessage(content=correction),
                     ],
                     stage=f"research round {round_number} corrective retry",
                 )
@@ -288,6 +273,11 @@ def build_workflow_graph(
                     raise TypeError(
                         "Tool-bound research model must return an AIMessage."
                     )
+                correction = _research_response_correction(
+                    state,
+                    response,
+                    follow_up=follow_up,
+                )
         except APITimeoutError:
             if follow_up and state["retrieval_count"] > 0:
                 RUN_LOGGER.warning(
@@ -301,17 +291,12 @@ def build_workflow_graph(
             round_number,
             research_duration,
         )
-        if response.tool_calls:
+        if response.tool_calls and correction is None:
             _log_tool_selection(response.tool_calls[0])
             return {
                 "messages": [response],
                 "research_action": "tools",
                 "direct_response": None,
-                "previous_missing_information": (
-                    state["evaluation"].missing_information
-                    if follow_up and state.get("evaluation") is not None
-                    else ""
-                ),
                 "evaluation": None,
             }
         if follow_up:
@@ -320,10 +305,15 @@ def build_workflow_graph(
                     "Research model did not select a retrieval tool after correction."
                 )
             RUN_LOGGER.warning(
-                "Follow-up research did not select a tool after correction; "
+                "Follow-up research did not select a valid tool after correction; "
                 "answering with the evidence already retrieved"
             )
             return {"research_action": "answer", "direct_response": None}
+        if correction is not None:
+            raise RuntimeError(
+                "Research model did not select a valid retrieval tool after "
+                "correction."
+            )
         return {
             "research_action": "respond",
             "direct_response": _message_text(response).strip(),
@@ -412,19 +402,25 @@ def build_workflow_graph(
                             for reference_id in reference_ids_by_chunk[chunk_id]
                         ]
                     )
-                    graph_path_evidence = _merge_graph_path_evidence_record(
-                        graph_path_evidence,
-                        GraphPathEvidenceRecord(
-                            query=artifact.query,
-                            node_ids=path.node_ids,
-                            edge_ids=path.edge_ids,
-                            chunk_ids=path.chunk_ids,
-                            context_text=path.context_text,
-                            reference_ids=path_reference_ids,
-                            subquestion_indexes=[state["subquestion_index"]],
-                        ),
-                        state["subquestion_index"],
+                    graph_path_evidence, is_new = (
+                        _merge_graph_path_evidence_record(
+                            graph_path_evidence,
+                            GraphPathEvidenceRecord(
+                                query=artifact.query,
+                                node_ids=path.node_ids,
+                                edge_ids=path.edge_ids,
+                                chunk_ids=path.chunk_ids,
+                                context_text=path.context_text,
+                                reference_ids=path_reference_ids,
+                                subquestion_indexes=[state["subquestion_index"]],
+                            ),
+                            state["subquestion_index"],
+                        )
                     )
+                    if is_new:
+                        new_evidence_count += 1
+                    else:
+                        duplicate_evidence_count += 1
             elif isinstance(artifact, ChunkNeighborhoodArtifact):
                 query = (
                     "Chunk neighborhood: "
@@ -481,6 +477,11 @@ def build_workflow_graph(
             new_evidence_count,
             duplicate_evidence_count,
         )
+        consecutive_empty_retrievals = (
+            state["consecutive_empty_retrievals"] + 1
+            if new_evidence_count == 0
+            else 0
+        )
         return {
             "messages": [
                 RemoveMessage(id=message.id)
@@ -499,6 +500,7 @@ def build_workflow_graph(
             "retrieval_queries": retrieval_queries,
             "new_evidence_count": new_evidence_count,
             "duplicate_evidence_count": duplicate_evidence_count,
+            "consecutive_empty_retrievals": consecutive_empty_retrievals,
             "research_action": None,
         }
 
@@ -520,9 +522,14 @@ def build_workflow_graph(
         if decision.verdict == "sufficient" and not _has_current_evidence(state):
             decision = SufficiencyDecision(
                 verdict="insufficient",
-                missing_information=(
-                    decision.missing_information
-                    or "No knowledge-base evidence has been retrieved."
+                missing_information=[
+                    "No knowledge-base evidence has been retrieved."
+                ],
+                recommendation=SearchRecommendation(
+                    reason="The question still needs knowledge-base evidence.",
+                    search_focus=state["subquestions"][
+                        state["subquestion_index"]
+                    ],
                 ),
             )
         if decision.verdict == "conversation" and (
@@ -530,21 +537,27 @@ def build_workflow_graph(
         ):
             decision = SufficiencyDecision(
                 verdict="insufficient",
-                missing_information=(
-                    decision.missing_information
-                    or "The request requires a knowledge-base-grounded answer."
+                missing_information=[
+                    "The request requires a knowledge-base-grounded answer."
+                ],
+                recommendation=SearchRecommendation(
+                    reason="The request is substantive and requires evidence.",
+                    search_focus=state["subquestions"][
+                        state["subquestion_index"]
+                    ],
                 ),
             )
+        decision = _fallback_from_unavailable_expansion(state, decision)
         RUN_LOGGER.info(
             "Evidence evaluation round %d completed in %.2fs: %s",
             round_number,
             duration,
             decision.verdict,
         )
-        if decision.missing_information:
+        for missing_item in decision.missing_information:
             RUN_LOGGER.info(
                 "Missing information: %s",
-                decision.missing_information,
+                missing_item,
             )
         return {"evaluation": decision}
 
@@ -566,7 +579,8 @@ def build_workflow_graph(
             "retrieval_queries": [],
             "new_evidence_count": 0,
             "duplicate_evidence_count": 0,
-            "previous_missing_information": "",
+            "consecutive_empty_retrievals": 0,
+            "allowed_sources": [],
             "allowed_chunks": [],
             "used_neighborhoods": [],
             "research_action": None,
@@ -701,7 +715,7 @@ def build_workflow_graph(
             "retrieval_queries": [],
             "new_evidence_count": 0,
             "duplicate_evidence_count": 0,
-            "previous_missing_information": "",
+            "consecutive_empty_retrievals": 0,
             "allowed_sources": [],
             "allowed_chunks": [],
             "used_neighborhoods": [],
@@ -790,10 +804,13 @@ def _route_evaluation(state: AgentState) -> str:
         return "finish_conversation"
     if evaluation.verdict == "sufficient":
         return "complete_subquestion"
-    if _retrieval_made_no_progress(state):
+    if (
+        state["consecutive_empty_retrievals"]
+        >= MAX_CONSECUTIVE_EMPTY_RETRIEVALS
+    ):
         RUN_LOGGER.info(
-            "Early stopping: unchanged evidence gap after %d retrievals",
-            state["retrieval_count"],
+            "Early stopping: %d consecutive retrievals returned no new evidence",
+            state["consecutive_empty_retrievals"],
         )
         return "complete_subquestion"
     if state["retrieval_count"] >= MAX_RETRIEVALS_PER_SUBQUESTION:
@@ -809,6 +826,112 @@ def _route_completed_subquestion(state: AgentState) -> str:
     if state["subquestion_index"] + 1 < len(state["subquestions"]):
         return "advance_subquestion"
     return "answer"
+
+
+def _research_response_correction(
+    state: AgentState,
+    response: AIMessage,
+    *,
+    follow_up: bool,
+) -> str | None:
+    if not response.tool_calls:
+        return RESEARCH_TOOL_CORRECTION if follow_up else None
+    if len(response.tool_calls) != 1:
+        return SINGLE_RESEARCH_TOOL_CORRECTION
+
+    tool_call = response.tool_calls[0]
+    name = str(tool_call.get("name", ""))
+    arguments = tool_call.get("args", {})
+    if not isinstance(arguments, dict):
+        return SINGLE_RESEARCH_TOOL_CORRECTION
+
+    evaluation = state.get("evaluation")
+    recommendation = (
+        evaluation.recommendation if evaluation is not None else None
+    )
+    if isinstance(recommendation, ExpandRecommendation):
+        if (
+            name == "get_chunk_neighborhood"
+            and arguments.get("source") == recommendation.source
+            and arguments.get("chunk_id") == recommendation.chunk_id
+        ):
+            return None
+        return (
+            "Call get_chunk_neighborhood exactly once with source "
+            f"{recommendation.source!r} and chunk_id "
+            f"{recommendation.chunk_id!r}. Do not call another tool."
+        )
+
+    if name == "get_chunk_neighborhood":
+        return (
+            "The recommended action is search. Call exactly one of "
+            "find_documents or search_knowledge_base, not "
+            "get_chunk_neighborhood."
+        )
+    if name not in {"find_documents", "search_knowledge_base"}:
+        return SINGLE_RESEARCH_TOOL_CORRECTION
+    if _is_duplicate_retrieval(state, name, arguments):
+        return (
+            "That retrieval was already attempted. Call exactly one search "
+            "tool with a different focused query."
+        )
+    return None
+
+
+def _is_duplicate_retrieval(
+    state: AgentState,
+    tool_name: str,
+    arguments: dict,
+) -> bool:
+    query = str(arguments.get("query", "")).strip()
+    if tool_name == "find_documents":
+        query = f"Document search: {query}"
+    normalized_queries = {
+        item.casefold() for item in state["retrieval_queries"]
+    }
+    return query.casefold() in normalized_queries
+
+
+def _fallback_from_unavailable_expansion(
+    state: AgentState,
+    decision: SufficiencyDecision,
+) -> SufficiencyDecision:
+    recommendation = decision.recommendation
+    if not isinstance(recommendation, ExpandRecommendation):
+        return decision
+    if _expansion_is_available(state, recommendation):
+        return decision
+
+    RUN_LOGGER.info(
+        "Recommended expansion is unavailable; falling back to search: %s :: %s",
+        recommendation.source,
+        recommendation.chunk_id,
+    )
+    return decision.model_copy(
+        update={
+            "recommendation": SearchRecommendation(
+                reason=(
+                    "The recommended chunk is unavailable or was already "
+                    "expanded, so a different passage is needed."
+                ),
+                search_focus="; ".join(decision.missing_information),
+            )
+        }
+    )
+
+
+def _expansion_is_available(
+    state: AgentState,
+    recommendation: ExpandRecommendation,
+) -> bool:
+    key = _chunk_key(recommendation.source, recommendation.chunk_id)
+    return (
+        key not in state["used_neighborhoods"]
+        and any(
+            _chunk_key(chunk.source, chunk.chunk_id) == key
+            for chunk in state["allowed_chunks"]
+        )
+    )
 
 
 def _log_tool_selection(tool_call: dict) -> None:
@@ -993,7 +1116,7 @@ def _merge_graph_path_evidence_record(
     existing: list[GraphPathEvidenceRecord],
     incoming: GraphPathEvidenceRecord,
     subquestion_index: int,
-) -> list[GraphPathEvidenceRecord]:
+) -> tuple[list[GraphPathEvidenceRecord], bool]:
     merged = list(existing)
     key = (tuple(incoming.node_ids), tuple(incoming.edge_ids))
     for index, record in enumerate(merged):
@@ -1008,9 +1131,9 @@ def _merge_graph_path_evidence_record(
                     ]
                 }
             )
-        return merged
+        return merged, False
     merged.append(incoming)
-    return merged
+    return merged, True
 
 
 def _chunk_source_reference(chunk: AgentChunkReference) -> SourceReference:
@@ -1039,33 +1162,6 @@ def _has_current_evidence(state: AgentState) -> bool:
     ) or any(
         subquestion_index in record.subquestion_indexes
         for record in state["document_evidence"]
-    )
-
-
-def _retrieval_made_no_progress(state: AgentState) -> bool:
-    if state["retrieval_count"] < NO_PROGRESS_MIN_RETRIEVALS:
-        return False
-    if state["new_evidence_count"] > NO_PROGRESS_MAX_NEW_EVIDENCE:
-        return False
-    evaluation = state.get("evaluation")
-    if evaluation is None:
-        return False
-    return _information_gap_similarity(
-        state.get("previous_missing_information", ""),
-        evaluation.missing_information,
-    ) >= MISSING_INFORMATION_SIMILARITY_THRESHOLD
-
-
-def _information_gap_similarity(left: str, right: str) -> float:
-    left_tokens = set(re.findall(r"[a-z0-9]+", left.casefold()))
-    right_tokens = set(re.findall(r"[a-z0-9]+", right.casefold()))
-    left_tokens -= MISSING_INFORMATION_STOP_WORDS
-    right_tokens -= MISSING_INFORMATION_STOP_WORDS
-    if not left_tokens or not right_tokens:
-        return 0.0
-    return len(left_tokens & right_tokens) / min(
-        len(left_tokens),
-        len(right_tokens),
     )
 
 

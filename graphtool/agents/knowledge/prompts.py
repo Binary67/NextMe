@@ -44,9 +44,10 @@ searches, or neighborhood lookups.
 
 When unresolved information is present, the previous evidence was insufficient.
 You must call exactly one retrieval tool to address that gap and must not respond
-with prose. Use find_documents when an unresolved source must be identified. Use
-get_chunk_neighborhood only when adjacent context from an existing result may fill
-the gap. Otherwise call search_knowledge_base with a new focused query.
+with prose. Follow the recommended action in the research context. For search,
+use find_documents when an unresolved source must be identified; otherwise call
+search_knowledge_base with a new focused query. For expand, call
+get_chunk_neighborhood with the exact recommended source and chunk_id.
 """
 
 EVALUATOR_SYSTEM_PROMPT = """\
@@ -54,9 +55,18 @@ Evaluate whether the available evidence supports a knowledge-base-grounded answe
 
 Return conversation only for a greeting, thanks, or acknowledgement that requires
 no factual answer. Return sufficient only when the retrieved evidence directly
-covers every important part of the question. Otherwise return insufficient and
-describe the specific missing information. Do not use general model knowledge to
-fill gaps and do not treat repeated or merely related evidence as sufficient.
+covers every important part of the question. Otherwise return insufficient, list
+each specific missing fact separately, and recommend the next retrieval action.
+
+Recommend search when a different fact, passage, or document is needed, and give
+a focused description of what to search for. Recommend expand only when an
+available chunk appears incomplete and its immediately adjacent document context
+is likely to contain the missing information. For expand, copy the exact source
+and chunk_id from the retrieved evidence. Do not recommend expansion merely
+because the current evidence is insufficient.
+
+Do not use general model knowledge to fill gaps and do not treat repeated or
+merely related evidence as sufficient.
 """
 
 ANSWER_SYSTEM_PROMPT = """\

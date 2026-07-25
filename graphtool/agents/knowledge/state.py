@@ -8,11 +8,64 @@ from typing_extensions import TypedDict
 from graphtool.retrieval import SourceReference
 
 
+class SearchRecommendation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["search"] = "search"
+    reason: str = Field(min_length=1, pattern=r"\S")
+    search_focus: str = Field(min_length=1, pattern=r"\S")
+
+
+class ExpandRecommendation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["expand"] = "expand"
+    reason: str = Field(min_length=1, pattern=r"\S")
+    source: str = Field(min_length=1, pattern=r"\S")
+    chunk_id: str = Field(min_length=1, pattern=r"\S")
+
+
+RetrievalRecommendation = Annotated[
+    SearchRecommendation | ExpandRecommendation,
+    Field(discriminator="action"),
+]
+
+
 class SufficiencyDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     verdict: Literal["conversation", "sufficient", "insufficient"]
-    missing_information: str = ""
+    missing_information: list[str] = Field(default_factory=list)
+    recommendation: RetrievalRecommendation | None = None
+
+    @field_validator("missing_information")
+    @classmethod
+    def normalize_missing_information(cls, values: list[str]) -> list[str]:
+        normalized = []
+        for value in values:
+            item = value.strip()
+            if item and item not in normalized:
+                normalized.append(item)
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_recommendation(self) -> "SufficiencyDecision":
+        if self.verdict != "insufficient":
+            if self.missing_information or self.recommendation is not None:
+                raise ValueError(
+                    "Only insufficient evidence may include missing information "
+                    "or a retrieval recommendation."
+                )
+            return self
+        if not self.missing_information:
+            raise ValueError(
+                "Insufficient evidence requires missing information."
+            )
+        if self.recommendation is None:
+            raise ValueError(
+                "Insufficient evidence requires a retrieval recommendation."
+            )
+        return self
 
 
 class FinalAnswerDraft(BaseModel):
@@ -64,7 +117,7 @@ class SubquestionOutcome(BaseModel):
 
     question: str
     verdict: Literal["sufficient", "insufficient"]
-    missing_information: str = ""
+    missing_information: list[str] = Field(default_factory=list)
 
 
 class EvidenceReference(BaseModel):
@@ -145,7 +198,7 @@ class AgentState(TypedDict, total=False):
     retrieval_queries: list[str]
     new_evidence_count: int
     duplicate_evidence_count: int
-    previous_missing_information: str
+    consecutive_empty_retrievals: int
     allowed_sources: list[str]
     allowed_chunks: list[AgentChunkReference]
     used_neighborhoods: list[str]

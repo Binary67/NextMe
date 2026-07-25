@@ -6,15 +6,21 @@ from langchain_core.messages.utils import count_tokens_approximately
 from graphtool.agents.knowledge.state import (
     AgentState,
     EvidenceReference,
+    ExpandRecommendation,
+    RetrievalRecommendation,
 )
 from graphtool.retrieval import SourceReference, format_source_reference
 
 
 def research_context(state: AgentState) -> str:
+    evaluation = state.get("evaluation")
     missing_information = (
-        state["evaluation"].missing_information
-        if state.get("evaluation") is not None
-        else ""
+        evaluation.missing_information if evaluation is not None else []
+    )
+    recommendation = (
+        _recommendation_text(evaluation.recommendation)
+        if evaluation is not None and evaluation.recommendation is not None
+        else "[First retrieval: search only]"
     )
     available_chunks = [
         f"{item.source} :: {item.chunk_id}" for item in state["allowed_chunks"]
@@ -29,7 +35,9 @@ def research_context(state: AgentState) -> str:
         f"Available document sources: {state['allowed_sources'] or ['None']}\n"
         f"Available chunks: {available_chunks or ['None']}\n"
         f"Used neighborhoods: {state['used_neighborhoods'] or ['None']}\n"
-        f"Unresolved information: {missing_information or '[Not evaluated yet]'}"
+        f"Unresolved information: "
+        f"{missing_information or ['Not evaluated yet']}\n"
+        f"Recommended action: {recommendation}"
     )
 
 
@@ -50,7 +58,7 @@ def answer_text(state: AgentState, *, partial: bool) -> str:
         (
             f"- {outcome.question}: {outcome.verdict}"
             + (
-                f" ({outcome.missing_information})"
+                f" ({'; '.join(outcome.missing_information)})"
                 if outcome.missing_information
                 else ""
             )
@@ -235,3 +243,17 @@ def _format_reference(reference: SourceReference) -> str:
 
 def _current_question(state: AgentState) -> str:
     return state["subquestions"][state["subquestion_index"]]
+
+
+def _recommendation_text(
+    recommendation: RetrievalRecommendation,
+) -> str:
+    if isinstance(recommendation, ExpandRecommendation):
+        return (
+            f"expand | reason: {recommendation.reason} | target: "
+            f"{recommendation.source} :: {recommendation.chunk_id}"
+        )
+    return (
+        f"search | reason: {recommendation.reason} | focus: "
+        f"{recommendation.search_focus}"
+    )

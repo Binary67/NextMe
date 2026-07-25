@@ -80,7 +80,7 @@ class KnowledgeAgent:
                 "retrieval_queries": [],
                 "new_evidence_count": 0,
                 "duplicate_evidence_count": 0,
-                "previous_missing_information": "",
+                "consecutive_empty_retrievals": 0,
                 "allowed_sources": [],
                 "allowed_chunks": [],
                 "used_neighborhoods": [],

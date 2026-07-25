@@ -6,6 +6,35 @@ it.
 
 ## July 25, 2026
 
+### Deterministic research routing and progress tracking
+
+#### Intention
+
+- Prevent useful single-chunk retrievals from being mistaken for no progress.
+- Let evidence evaluation recommend focused searches or authorized adjacent
+  context while keeping stop decisions under deterministic workflow control.
+- Prevent invalid, duplicate, or multiple tool selections from consuming the
+  retrieval budget.
+
+#### Changes implemented
+
+- Replaced prose similarity-based early stopping with consecutive empty-result
+  tracking and retained the fixed per-subquestion retrieval limit.
+- Changed evaluator output to list atomic missing facts and return a structured
+  `search` or `expand` recommendation with the required focus or chunk target.
+- Forced initial research to use document discovery or knowledge search,
+  validated expansion targets against unused returned chunks, and fell back to
+  focused search when expansion was unavailable.
+- Added corrective retries for duplicate searches, multiple tool calls, and
+  tool selections that conflict with the recommended action.
+- Counted newly discovered citable graph paths as evidence progress and reset
+  document and chunk authorization state between subquestions.
+- Added focused tests for single-chunk progress, empty-result stopping,
+  recommendation routing, expansion fallback, duplicate-query correction, and
+  exactly-one-tool enforcement.
+
+---
+
 ### Document discovery and source-filtered retrieval
 
 #### Intention
