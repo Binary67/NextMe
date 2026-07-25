@@ -2,9 +2,14 @@ import json
 
 import pytest
 
-from graphtool.ingestion import audio
-from graphtool.ingestion.audio import (
-    convert_audio_to_markdown,
+from graphtool.ingestion import (
+    audio,
+    audio_assembly,
+    audio_cache,
+    audio_media,
+)
+from graphtool.ingestion.audio import convert_audio_to_markdown
+from graphtool.ingestion.audio_glossary import (
     load_audio_transcription_terms,
 )
 from graphtool.source import source_key
@@ -64,7 +69,7 @@ def _prepare(monkeypatch, duration_milliseconds):
     monkeypatch.setattr(audio.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
         audio,
-        "_probe_duration",
+        "probe_duration",
         lambda path, source, ffprobe: duration_milliseconds,
     )
     render_calls = []
@@ -82,7 +87,7 @@ def _prepare(monkeypatch, duration_milliseconds):
             f"audio-{start_milliseconds}-{end_milliseconds}".encode()
         )
 
-    monkeypatch.setattr(audio, "_render_chunk", fake_render)
+    monkeypatch.setattr(audio, "render_chunk", fake_render)
     return render_calls
 
 
@@ -241,7 +246,7 @@ def test_convert_audio_invalidates_cache_when_model_changes(monkeypatch, tmp_pat
     manifest_path = cache_dir / source_key(source) / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     assert manifest["model"] == "transcribe-b"
-    assert manifest["assembly_revision"] == audio.AUDIO_ASSEMBLY_REVISION
+    assert manifest["assembly_revision"] == audio_assembly.AUDIO_ASSEMBLY_REVISION
     assert manifest["complete"] is True
     assert manifest["markdown_hash"]
 
@@ -267,9 +272,9 @@ def test_convert_audio_reassembles_from_raw_chunks_when_assembly_changes(
         [],
     )
     monkeypatch.setattr(
-        audio,
+        audio_cache,
         "AUDIO_ASSEMBLY_REVISION",
-        audio.AUDIO_ASSEMBLY_REVISION + 1,
+        audio_assembly.AUDIO_ASSEMBLY_REVISION + 1,
     )
     transcriber = FakeTranscriber([])
 
@@ -598,12 +603,12 @@ def test_render_chunk_normalizes_audio_and_checks_size(monkeypatch, tmp_path):
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        audio.Path(command[-1]).write_bytes(b"normalized-audio")
+        audio_media.Path(command[-1]).write_bytes(b"normalized-audio")
 
-    monkeypatch.setattr(audio.subprocess, "run", fake_run)
+    monkeypatch.setattr(audio_media.subprocess, "run", fake_run)
     output_path = tmp_path / "chunk.mp3"
 
-    audio._render_chunk(
+    audio_media.render_chunk(
         tmp_path / "source.wav",
         output_path,
         1_000,
@@ -630,8 +635,8 @@ def test_render_chunk_normalizes_audio_and_checks_size(monkeypatch, tmp_path):
 
 
 def test_chunk_boundaries_do_not_create_tiny_overlap_only_chunk():
-    assert audio._chunk_boundaries(1_203_000) == [(0, 1_203_000)]
-    assert audio._chunk_boundaries(2_403_000) == [
+    assert audio_media.chunk_boundaries(1_203_000) == [(0, 1_203_000)]
+    assert audio_media.chunk_boundaries(2_403_000) == [
         (0, 1_205_000),
         (1_200_000, 2_403_000),
     ]
@@ -641,7 +646,7 @@ def test_fuzzy_overlap_removes_exact_boundary_text():
     previous = "Opening facts. Shared boundary words remain exactly the same."
     current = "Shared boundary words remain exactly the same. New section facts."
 
-    result = audio._remove_fuzzy_overlap(previous, current)
+    result = audio_assembly.remove_fuzzy_overlap(previous, current)
 
     assert result == "New section facts."
 
@@ -654,7 +659,7 @@ def test_fuzzy_overlap_handles_asr_substitutions_and_insertions():
         "Revenue grew by 20% compared with the last year. Margins also improved."
     )
 
-    result = audio._remove_fuzzy_overlap(previous, current)
+    result = audio_assembly.remove_fuzzy_overlap(previous, current)
 
     assert result == "Margins also improved."
 
@@ -663,6 +668,6 @@ def test_fuzzy_overlap_preserves_current_text_when_confidence_is_low():
     previous = "Nothing related appears at this particular recording boundary."
     current = "A completely different section begins with unique material."
 
-    result = audio._remove_fuzzy_overlap(previous, current)
+    result = audio_assembly.remove_fuzzy_overlap(previous, current)
 
     assert result == current
