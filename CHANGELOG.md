@@ -6,7 +6,28 @@ it.
 
 ## July 25, 2026
 
-### Intention
+### Citable graph-path evidence
+
+#### Intention
+
+- Preserve ordered multi-hop graph relationships through evidence evaluation
+  and final answer generation.
+- Expose graph paths only when every supporting chunk has a valid citation.
+
+#### Changes implemented
+
+- Added structured graph-path evidence to knowledge-search artifacts and agent
+  state, including supporting chunk and reference identifiers.
+- Carried citable graph paths into evaluator and answer prompts while excluding
+  paths whose supporting chunks were not all returned.
+- Deduplicated graph-path evidence across subquestions and added focused tests
+  for propagation, citation coverage, exclusion, and deduplication.
+
+---
+
+### Auditable proper-noun corrections
+
+#### Intention
 
 - Improve proper-noun reliability without requiring users to maintain
   pronunciations or transcription variants.
@@ -17,7 +38,7 @@ it.
 - Support only the current generated-data formats while the project remains in
   active development.
 
-### Changes implemented
+#### Changes implemented
 
 - Added a structured fast-model correction pass after audio transcription.
 - Restricted corrections to exact canonical terms from
