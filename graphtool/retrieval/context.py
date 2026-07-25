@@ -113,7 +113,7 @@ def format_context(
     if graph_paths:
         lines.extend(["", "Graph paths:"])
         for path in graph_paths:
-            lines.append(f"- {_graph_path_text(path)}")
+            lines.append(f"- {format_graph_path(path)}")
             if path.chunk_ids:
                 lines.append(f"  Evidence chunks: {', '.join(path.chunk_ids)}")
     return "\n".join(lines).rstrip()
@@ -188,7 +188,7 @@ def properties_text(properties: dict[str, Any]) -> str:
     return json.dumps(properties, sort_keys=True)
 
 
-def _graph_path_text(path: GraphPathHit) -> str:
+def format_graph_path(path: GraphPathHit) -> str:
     parts = [path.nodes[0].label]
     for index, edge in enumerate(path.edges):
         left = path.nodes[index]

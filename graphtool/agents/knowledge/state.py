@@ -85,6 +85,18 @@ class EvidenceRecord(BaseModel):
     subquestion_indexes: list[int] = Field(default_factory=list)
 
 
+class GraphPathEvidenceRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    node_ids: list[str]
+    edge_ids: list[str]
+    chunk_ids: list[str]
+    context_text: str
+    reference_ids: list[str] = Field(default_factory=list)
+    subquestion_indexes: list[int] = Field(default_factory=list)
+
+
 class AgentChunkReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -114,6 +126,7 @@ class AgentState(TypedDict, total=False):
     subquestion_index: int
     subquestion_outcomes: list[SubquestionOutcome]
     evidence: list[EvidenceRecord]
+    graph_path_evidence: list[GraphPathEvidenceRecord]
     references: list[EvidenceReference]
     search_count: int
     retrieval_count: int

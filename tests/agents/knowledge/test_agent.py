@@ -13,12 +13,14 @@ from graphtool.agents.knowledge.prompts import NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
 from graphtool.agents.knowledge.state import (
     ConversationSummary,
     FinalAnswerDraft,
+    GraphPathEvidenceRecord,
     QueryDecomposition,
     SufficiencyDecision,
 )
 from graphtool.chunking.types import Chunk
+from graphtool.graph.types import Edge, Node
 from graphtool.retrieval import RetrievalResult, SourceReference
-from graphtool.retrieval.types import ChunkHit
+from graphtool.retrieval.types import ChunkHit, GraphPathHit
 
 
 class ToolModelResponse:
@@ -125,6 +127,7 @@ def _result(
     page=1,
     context="Evidence text.",
     chunks=None,
+    graph_paths=None,
 ):
     if chunks is None:
         chunk = Chunk(
@@ -144,6 +147,7 @@ def _result(
             SourceReference(source=source, page_start=page, page_end=page)
         ],
         chunks=chunks,
+        graph_paths=graph_paths or [],
         context_text=context,
     )
 
@@ -209,6 +213,27 @@ def _chunk_hit(chunk):
         score=1.0,
         linked_nodes=[],
         linked_relationships=[],
+    )
+
+
+def _multi_hop_graph_path(*chunk_ids):
+    return GraphPathHit(
+        score=1.0,
+        nodes=[
+            Node(id="alpha", label="Alpha", type="System"),
+            Node(id="beta", label="Beta", type="Component"),
+            Node(id="gamma", label="Gamma", type="Service"),
+        ],
+        edges=[
+            Edge(id="uses", source="alpha", target="beta", label="uses"),
+            Edge(
+                id="depends-on",
+                source="beta",
+                target="gamma",
+                label="depends on",
+            ),
+        ],
+        chunk_ids=list(chunk_ids),
     )
 
 
@@ -707,6 +732,114 @@ def test_agent_retrieves_allowed_chunk_neighborhood_as_cited_evidence():
         SourceReference(source="docs/guide.md", page_start=2, page_end=2),
         SourceReference(source="docs/guide.md", page_start=3, page_end=3),
     ]
+
+
+def test_agent_preserves_citable_graph_path_for_evaluation_and_answer():
+    first = _chunk("alpha-beta", 0, 1, "Alpha uses Beta.")
+    second = _chunk("beta-gamma", 1, 2, "Beta depends on Gamma.")
+    graph_path = _multi_hop_graph_path(first.id, second.id)
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [_search_call("Alpha relationship to Gamma")],
+            SufficiencyDecision: [SufficiencyDecision(verdict="sufficient")],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="Alpha uses a component that depends on Gamma.",
+                    cited_reference_ids=["S1", "S2"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [
+            _result(
+                "Alpha relationship to Gamma",
+                chunks=[_chunk_hit(first), _chunk_hit(second)],
+                graph_paths=[graph_path],
+            )
+        ]
+    )
+    agent = create_knowledge_agent(model, model, runtime)
+
+    response = agent.ask(
+        "How is Alpha related to Gamma?",
+        thread_id="thread-1",
+    )
+
+    expected_path = "Alpha --uses--> Beta --depends on--> Gamma"
+    evaluator_prompt = str(model.calls[SufficiencyDecision][0][1].content)
+    answer_prompt = str(model.calls[FinalAnswerDraft][0][1].content)
+    assert expected_path in evaluator_prompt
+    assert "Available reference IDs: ['S1', 'S2']" in evaluator_prompt
+    assert expected_path in answer_prompt
+    assert response.references == [
+        SourceReference(source="docs/guide.md", page_start=1, page_end=1),
+        SourceReference(source="docs/guide.md", page_start=2, page_end=2),
+    ]
+
+
+def test_agent_excludes_graph_path_without_all_supporting_chunks():
+    first = _chunk("alpha-beta", 0, 1, "Alpha uses Beta.")
+    graph_path = _multi_hop_graph_path(
+        first.id,
+        "missing-beta-gamma",
+    )
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [_search_call("Alpha relationship to Gamma")],
+            SufficiencyDecision: [SufficiencyDecision(verdict="sufficient")],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="Alpha uses Beta.",
+                    cited_reference_ids=["S1"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [
+            _result(
+                "Alpha relationship to Gamma",
+                chunks=[_chunk_hit(first)],
+                graph_paths=[graph_path],
+            )
+        ]
+    )
+    agent = create_knowledge_agent(model, model, runtime)
+
+    agent.ask("How is Alpha related to Gamma?", thread_id="thread-1")
+
+    evaluator_prompt = str(model.calls[SufficiencyDecision][0][1].content)
+    answer_prompt = str(model.calls[FinalAnswerDraft][0][1].content)
+    assert "Alpha --uses--> Beta --depends on--> Gamma" not in evaluator_prompt
+    assert "Alpha --uses--> Beta --depends on--> Gamma" not in answer_prompt
+
+
+def test_graph_path_evidence_is_deduplicated_across_subquestions():
+    first = GraphPathEvidenceRecord(
+        query="first query",
+        node_ids=["alpha", "beta"],
+        edge_ids=["uses"],
+        chunk_ids=["alpha-beta"],
+        context_text="Alpha --uses--> Beta",
+        reference_ids=["S1"],
+        subquestion_indexes=[0],
+    )
+    duplicate = first.model_copy(
+        update={
+            "query": "second query",
+            "subquestion_indexes": [1],
+        }
+    )
+
+    merged = workflow_graph._merge_graph_path_evidence_record(
+        [first],
+        duplicate,
+        1,
+    )
+
+    assert len(merged) == 1
+    assert merged[0].subquestion_indexes == [0, 1]
 
 
 def test_agent_rejects_neighborhood_that_was_not_returned_by_search():

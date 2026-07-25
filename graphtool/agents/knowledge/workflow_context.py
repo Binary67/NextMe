@@ -137,11 +137,17 @@ def _evidence_text(
         if subquestion_index is None
         or subquestion_index in record.subquestion_indexes
     ]
-    if not evidence:
+    graph_paths = [
+        record
+        for record in state["graph_path_evidence"]
+        if subquestion_index is None
+        or subquestion_index in record.subquestion_indexes
+    ]
+    if not evidence and not graph_paths:
         return "[None]"
     used_reference_ids = {
         reference_id
-        for record in evidence
+        for record in [*evidence, *graph_paths]
         for reference_id in record.reference_ids
     }
     references = "\n".join(
@@ -157,7 +163,21 @@ def _evidence_text(
         )
         for record in evidence
     )
-    return f"Reference registry:\n{references or '[None]'}\n\n{searches}"
+    formatted_graph_paths = "\n".join(
+        (
+            f"- Search query: {record.query}\n"
+            f"  Available reference IDs: "
+            f"{record.reference_ids or ['None']}\n"
+            f"  Path: {record.context_text}\n"
+            f"  Evidence chunks: {record.chunk_ids}"
+        )
+        for record in graph_paths
+    )
+    return (
+        f"Reference registry:\n{references or '[None]'}\n\n"
+        f"Graph paths:\n{formatted_graph_paths or '[None]'}\n\n"
+        f"{searches}"
+    )
 
 
 def _conversation_context_text(state: AgentState) -> str:

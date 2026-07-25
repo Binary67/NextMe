@@ -7,11 +7,20 @@ from pydantic import BaseModel, ConfigDict, Field
 from graphtool.agents.knowledge.state import AgentChunkReference, AgentState
 from graphtool.chunking.types import Chunk
 from graphtool.retrieval import SourceReference
-from graphtool.retrieval.context import format_context
+from graphtool.retrieval.context import format_context, format_graph_path
 from graphtool.runtime import GraphToolRuntime
 
 
 class SearchEvidenceChunk(AgentChunkReference):
+    context_text: str
+
+
+class SearchEvidencePath(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_ids: list[str]
+    edge_ids: list[str]
+    chunk_ids: list[str]
     context_text: str
 
 
@@ -23,6 +32,7 @@ class KnowledgeSearchArtifact(BaseModel):
     context_text: str
     references: list[SourceReference] = Field(default_factory=list)
     chunks: list[SearchEvidenceChunk] = Field(default_factory=list)
+    graph_paths: list[SearchEvidencePath] = Field(default_factory=list)
 
 
 class NeighborhoodChunk(AgentChunkReference):
@@ -67,16 +77,28 @@ def create_knowledge_tools(runtime: GraphToolRuntime) -> list[BaseTool]:
             if scope is not None
             else runtime.search(normalized_query)
         )
+        chunks = [
+            SearchEvidenceChunk(
+                **_chunk_reference(hit.chunk).model_dump(),
+                context_text=format_context(normalized_query, [hit]),
+            )
+            for hit in result.chunks
+        ]
+        returned_chunk_ids = {chunk.chunk_id for chunk in chunks}
         artifact = KnowledgeSearchArtifact(
             query=normalized_query,
             context_text=result.context_text,
             references=result.references,
-            chunks=[
-                SearchEvidenceChunk(
-                    **_chunk_reference(hit.chunk).model_dump(),
-                    context_text=format_context(normalized_query, [hit]),
+            chunks=chunks,
+            graph_paths=[
+                SearchEvidencePath(
+                    node_ids=[node.id for node in path.nodes],
+                    edge_ids=[edge.id for edge in path.edges],
+                    chunk_ids=path.chunk_ids,
+                    context_text=format_graph_path(path),
                 )
-                for hit in result.chunks
+                for path in result.graph_paths
+                if set(path.chunk_ids).issubset(returned_chunk_ids)
             ],
         )
         available_chunks = "\n".join(

@@ -72,6 +72,7 @@ class KnowledgeAgent:
                 "subquestion_index": 0,
                 "subquestion_outcomes": [],
                 "evidence": [],
+                "graph_path_evidence": [],
                 "references": [],
                 "search_count": 0,
                 "retrieval_count": 0,

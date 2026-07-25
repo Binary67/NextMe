@@ -35,6 +35,7 @@ from graphtool.agents.knowledge.state import (
     ConversationSummary,
     EvidenceRecord,
     FinalAnswerDraft,
+    GraphPathEvidenceRecord,
     QueryDecomposition,
     SubquestionOutcome,
     SufficiencyDecision,
@@ -328,6 +329,7 @@ def build_workflow_graph(
 
     def record_tool_results(state: AgentState) -> dict:
         evidence = list(state["evidence"])
+        graph_path_evidence = list(state["graph_path_evidence"])
         references = list(state["references"])
         allowed_chunks = list(state["allowed_chunks"])
         used_neighborhoods = list(state["used_neighborhoods"])
@@ -348,6 +350,7 @@ def build_workflow_graph(
                     artifact.chunks,
                 )
                 search_count += 1
+                reference_ids_by_chunk: dict[str, list[str]] = {}
                 for chunk in artifact.chunks:
                     references, reference_ids = merge_references(
                         references,
@@ -369,6 +372,28 @@ def build_workflow_graph(
                         new_evidence_count += 1
                     else:
                         duplicate_evidence_count += 1
+                    reference_ids_by_chunk[chunk.chunk_id] = reference_ids
+                for path in artifact.graph_paths:
+                    path_reference_ids = unique_ordered(
+                        [
+                            reference_id
+                            for chunk_id in path.chunk_ids
+                            for reference_id in reference_ids_by_chunk[chunk_id]
+                        ]
+                    )
+                    graph_path_evidence = _merge_graph_path_evidence_record(
+                        graph_path_evidence,
+                        GraphPathEvidenceRecord(
+                            query=artifact.query,
+                            node_ids=path.node_ids,
+                            edge_ids=path.edge_ids,
+                            chunk_ids=path.chunk_ids,
+                            context_text=path.context_text,
+                            reference_ids=path_reference_ids,
+                            subquestion_indexes=[state["subquestion_index"]],
+                        ),
+                        state["subquestion_index"],
+                    )
             elif isinstance(artifact, ChunkNeighborhoodArtifact):
                 query = (
                     "Chunk neighborhood: "
@@ -432,6 +457,7 @@ def build_workflow_graph(
                 if message.id is not None
             ],
             "evidence": evidence,
+            "graph_path_evidence": graph_path_evidence,
             "references": references,
             "allowed_chunks": allowed_chunks,
             "used_neighborhoods": used_neighborhoods,
@@ -634,6 +660,7 @@ def build_workflow_graph(
             "subquestion_index": 0,
             "subquestion_outcomes": [],
             "evidence": [],
+            "graph_path_evidence": [],
             "references": [],
             "search_count": 0,
             "retrieval_count": 0,
@@ -883,6 +910,30 @@ def _merge_evidence_record(
         return merged, False
     merged.append(incoming)
     return merged, True
+
+
+def _merge_graph_path_evidence_record(
+    existing: list[GraphPathEvidenceRecord],
+    incoming: GraphPathEvidenceRecord,
+    subquestion_index: int,
+) -> list[GraphPathEvidenceRecord]:
+    merged = list(existing)
+    key = (tuple(incoming.node_ids), tuple(incoming.edge_ids))
+    for index, record in enumerate(merged):
+        if (tuple(record.node_ids), tuple(record.edge_ids)) != key:
+            continue
+        if subquestion_index not in record.subquestion_indexes:
+            merged[index] = record.model_copy(
+                update={
+                    "subquestion_indexes": [
+                        *record.subquestion_indexes,
+                        subquestion_index,
+                    ]
+                }
+            )
+        return merged
+    merged.append(incoming)
+    return merged
 
 
 def _chunk_source_reference(chunk: AgentChunkReference) -> SourceReference:
