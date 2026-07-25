@@ -10,7 +10,6 @@ from graphtool.retrieval.embedding_store import ChunkEmbeddingStore
 from graphtool.retrieval.context import (
     format_context,
     source_references,
-    unique_ordered,
 )
 from graphtool.retrieval.graph_retriever import (
     DEFAULT_MAX_HOPS,
@@ -27,6 +26,7 @@ from graphtool.retrieval.retriever import (
 )
 from graphtool.retrieval.types import ChunkHit, RetrievalResult
 from graphtool.run_logging import LOGGER_NAME
+from graphtool.sequences import unique_ordered
 
 RECIPROCAL_RANK_CONSTANT = 60
 RUN_LOGGER = logging.getLogger(LOGGER_NAME)

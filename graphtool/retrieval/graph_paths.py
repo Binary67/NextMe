@@ -5,13 +5,13 @@ from dataclasses import dataclass
 from graphtool.chunking.types import Chunk
 from graphtool.graph.types import Edge, KnowledgeGraph, Node
 from graphtool.retrieval.bm25 import BM25Document, BM25Index, tokenize
-from graphtool.retrieval.context import unique_ordered
 from graphtool.retrieval.scoring import (
     bm25_scores,
     normalize_scores,
     semantic_similarity_scores,
 )
 from graphtool.retrieval.types import GraphPathHit
+from graphtool.sequences import unique_ordered
 
 DEFAULT_TOP_SEEDS = 5
 DEFAULT_BEAM_WIDTH = 50

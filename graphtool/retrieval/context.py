@@ -1,5 +1,5 @@
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -154,16 +154,6 @@ def source_references(chunk_hits: Sequence[ChunkHit]) -> list[SourceReference]:
             for page_start, page_end in merged
         )
     return references
-
-
-def unique_ordered(values: Iterable[str]) -> list[str]:
-    seen = set()
-    unique = []
-    for value in values:
-        if value not in seen:
-            seen.add(value)
-            unique.append(value)
-    return unique
 
 
 def node_text(node: Node) -> str:

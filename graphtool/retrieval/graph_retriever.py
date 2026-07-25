@@ -13,7 +13,6 @@ from graphtool.retrieval.context import (
     build_chunk_graph_index,
     format_context,
     source_references,
-    unique_ordered,
 )
 from graphtool.retrieval.graph_paths import (
     DEFAULT_BEAM_WIDTH,
@@ -28,6 +27,7 @@ from graphtool.retrieval.graph_paths import (
 )
 from graphtool.retrieval.scoring import bm25_index
 from graphtool.retrieval.types import GraphPathHit, RetrievalResult
+from graphtool.sequences import unique_ordered
 
 DEFAULT_MAX_HOPS = 2
 DEFAULT_TOP_PATHS = 5

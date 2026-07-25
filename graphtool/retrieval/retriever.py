@@ -16,7 +16,6 @@ from graphtool.retrieval.context import (
     build_chunk_graph_index,
     format_context,
     source_references,
-    unique_ordered,
 )
 from graphtool.retrieval.embedding_store import ChunkEmbeddingStore
 from graphtool.retrieval.scoring import (
@@ -25,6 +24,7 @@ from graphtool.retrieval.scoring import (
     semantic_similarity_scores,
 )
 from graphtool.retrieval.types import RetrievalResult
+from graphtool.sequences import unique_ordered
 
 PRIMARY_LABEL_BM25_WEIGHT = 2.0
 ALIAS_BM25_WEIGHT = 1.5
