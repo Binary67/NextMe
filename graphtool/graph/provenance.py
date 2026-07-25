@@ -1,7 +1,10 @@
 import re
 from collections.abc import Sequence
 
-from graphtool.graph.taxonomy import UNCLASSIFIED_NODE_TYPE, normalize_type_name
+from graphtool.graph.taxonomy_types import (
+    UNCLASSIFIED_NODE_TYPE,
+    normalize_type_name,
+)
 from graphtool.graph.types import (
     Edge,
     EdgeProvenance,

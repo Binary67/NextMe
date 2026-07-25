@@ -5,7 +5,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from graphtool.graph.taxonomy import UNCLASSIFIED_NODE_TYPE, normalize_type_name
+from graphtool.graph.taxonomy_types import (
+    UNCLASSIFIED_NODE_TYPE,
+    normalize_type_name,
+)
 from graphtool.graph.types import Node
 from graphtool.llm.base import LLMClient
 from graphtool.llm.types import LLMMessage

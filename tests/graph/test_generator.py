@@ -20,7 +20,7 @@ from graphtool.graph.extraction_store import (
     JsonChunkExtractionStore,
 )
 from graphtool.graph.generator import generate_knowledge_graph
-from graphtool.graph.taxonomy import SqliteTaxonomySuggestionStore
+from graphtool.graph.taxonomy_stores import SqliteTaxonomySuggestionStore
 from graphtool.graph.types import Edge, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
 from graphtool.run_logging import configure_run_logger

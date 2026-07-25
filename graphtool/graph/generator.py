@@ -8,10 +8,8 @@ from graphtool.graph.chunk_graph import build_chunk_graph, log_document_graph
 from graphtool.graph.combiner import combine_knowledge_graphs
 from graphtool.graph.extraction import extract_chunks
 from graphtool.graph.extraction_store import ChunkExtractionStore
-from graphtool.graph.taxonomy import (
-    TaxonomySuggestionStore,
-    make_taxonomy_suggestion_records,
-)
+from graphtool.graph.taxonomy import make_taxonomy_suggestion_records
+from graphtool.graph.taxonomy_types import TaxonomySuggestionStore
 from graphtool.graph.types import GraphMetadata, KnowledgeGraph
 from graphtool.llm.base import LLMClient
 

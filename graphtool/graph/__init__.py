@@ -9,33 +9,35 @@ from graphtool.graph.embedding_store import (
 from graphtool.graph.extraction_store import JsonChunkExtractionStore
 from graphtool.graph.combiner import combine_knowledge_graphs
 from graphtool.graph.generator import generate_knowledge_graph
-from graphtool.graph.sqlite_store import (
-    SqliteGraphStore,
-    SqliteKnowledgeBaseStore,
-)
+from graphtool.graph.document_store import SqliteGraphStore
+from graphtool.graph.knowledge_base_store import SqliteKnowledgeBaseStore
 from graphtool.graph.provenance import (
     filter_knowledge_graph_by_source,
     filter_knowledge_graph_by_sources,
 )
 from graphtool.graph.resolver import SemanticEntityResolver
 from graphtool.graph.taxonomy import (
-    CANONICAL_NODE_TYPES,
+    aggregate_suggestions,
+    evolve_taxonomy,
+    migrate_promoted_types,
+    promote_suggestions,
+)
+from graphtool.graph.taxonomy_stores import (
     JsonNodeTypeRegistryStore,
     JsonTaxonomyPromotionAuditStore,
-    NodeTypeRegistry,
     SqliteTaxonomySuggestionStore,
+)
+from graphtool.graph.taxonomy_types import (
+    CANONICAL_NODE_TYPES,
+    NodeTypeRegistry,
     TaxonomyEvolutionResult,
     TaxonomyPromotionRecord,
     TaxonomySuggestionAggregate,
     TaxonomySuggestionRecord,
     UNCLASSIFIED_NODE_TYPE,
-    aggregate_suggestions,
     canonical_node_type_text,
     default_node_type_registry,
-    evolve_taxonomy,
-    migrate_promoted_types,
     normalize_type_name,
-    promote_suggestions,
 )
 from graphtool.graph.types import (
     Edge,

@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from graphtool.graph.sqlite_store import (
-    SqliteGraphStore as JsonGraphStore,
+from graphtool.graph.document_store import SqliteGraphStore as JsonGraphStore
+from graphtool.graph.knowledge_base_store import (
     SqliteKnowledgeBaseStore as JsonKnowledgeBaseStore,
 )
 from graphtool.graph.types import GraphMetadata, KnowledgeGraph, Node

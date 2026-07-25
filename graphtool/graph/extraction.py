@@ -13,7 +13,7 @@ from graphtool.graph.extraction_store import (
     ChunkExtractionStore,
     ExtractedKnowledgeGraph,
 )
-from graphtool.graph.taxonomy import (
+from graphtool.graph.taxonomy_types import (
     UNCLASSIFIED_NODE_TYPE,
     canonical_node_type_text,
 )

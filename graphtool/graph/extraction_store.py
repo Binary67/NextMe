@@ -5,7 +5,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from graphtool.graph.taxonomy import (
+from graphtool.graph.taxonomy_types import (
     CanonicalNodeType,
     UNCLASSIFIED_NODE_TYPE,
 )

@@ -8,9 +8,9 @@ from graphtool.graph.embedding_store import (
     SqliteGraphEmbeddingStore,
 )
 from graphtool.graph.provenance import add_edge_provenance, add_node_provenance
-from graphtool.graph.sqlite_store import (
+from graphtool.graph.document_store import SqliteGraphStore
+from graphtool.graph.knowledge_base_store import (
     KnowledgeBaseDelta,
-    SqliteGraphStore,
     SqliteKnowledgeBaseStore,
 )
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node

@@ -6,7 +6,7 @@ from typing import Protocol
 import numpy as np
 
 from graphtool.graph.embedding_store import NodeEmbeddingRecord
-from graphtool.graph.taxonomy import normalize_type_name
+from graphtool.graph.taxonomy_types import normalize_type_name
 from graphtool.graph.types import KnowledgeGraph, Node
 from graphtool.llm.base import EmbeddingClient
 

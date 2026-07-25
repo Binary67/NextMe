@@ -4,15 +4,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graphtool.graph.entity_matching import normalized_entity_name
-from graphtool.graph.provenance import materialize_edge, materialize_node
-from graphtool.graph.types import (
-    Edge,
-    EdgeProvenance,
-    GraphMetadata,
-    KnowledgeGraph,
-    Node,
-    NodeProvenance,
+from graphtool.graph.knowledge_base_rows import (
+    load_edge_provenance,
+    load_node_provenance,
+    sync_aliases,
+    sync_edges,
 )
+from graphtool.graph.provenance import materialize_edge, materialize_node
+from graphtool.graph.sqlite_sync import sync_keyed_payloads, sync_provenance
+from graphtool.graph.types import Edge, KnowledgeGraph, Node
 from graphtool.storage import as_connection, transaction
 
 _BATCH_SIZE = 400
@@ -24,113 +24,6 @@ class KnowledgeBaseDelta:
     deleted_node_ids: set[str]
     upserted_edges: list[Edge]
     deleted_edge_ids: set[str]
-
-
-class SqliteGraphStore:
-    """SQLite-backed per-document graph store."""
-
-    def __init__(
-        self,
-        conn_or_path: sqlite3.Connection | str | Path,
-    ) -> None:
-        self._conn = as_connection(conn_or_path)
-
-    def save(self, graph: KnowledgeGraph) -> None:
-        if graph.metadata is None:
-            raise ValueError("Cannot save graph without metadata.source.")
-        metadata = graph.metadata
-        with transaction(self._conn):
-            self._conn.execute(
-                "INSERT INTO graph_metadata "
-                "(source, content_hash, model, created_at) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(source) DO UPDATE SET "
-                "content_hash = excluded.content_hash, "
-                "model = excluded.model, "
-                "created_at = excluded.created_at",
-                (
-                    metadata.source,
-                    metadata.content_hash,
-                    metadata.model,
-                    metadata.created_at.isoformat(),
-                ),
-            )
-            _sync_source_payloads(
-                self._conn,
-                "graph_nodes",
-                "node_id",
-                metadata.source,
-                ((node.id, node.model_dump_json()) for node in graph.nodes),
-            )
-            _sync_source_payloads(
-                self._conn,
-                "graph_edges",
-                "edge_id",
-                metadata.source,
-                ((edge.id, edge.model_dump_json()) for edge in graph.edges),
-            )
-
-    def load(self, source: str) -> KnowledgeGraph:
-        metadata_row = self._conn.execute(
-            "SELECT source, content_hash, model, created_at "
-            "FROM graph_metadata WHERE source = ?",
-            (source,),
-        ).fetchone()
-        if metadata_row is None:
-            raise FileNotFoundError(f"Graph for {source!r} was not found.")
-        nodes = [
-            Node.model_validate_json(row["payload"])
-            for row in self._conn.execute(
-                "SELECT payload FROM graph_nodes "
-                "WHERE source = ? ORDER BY rowid",
-                (source,),
-            )
-        ]
-        edges = [
-            Edge.model_validate_json(row["payload"])
-            for row in self._conn.execute(
-                "SELECT payload FROM graph_edges "
-                "WHERE source = ? ORDER BY rowid",
-                (source,),
-            )
-        ]
-        return KnowledgeGraph(
-            nodes=nodes,
-            edges=edges,
-            metadata=_metadata_from_row(metadata_row),
-        )
-
-    def load_all(self) -> list[KnowledgeGraph]:
-        sources = [metadata.source for metadata in self.load_metadata()]
-        return [self.load(source) for source in sources]
-
-    def load_metadata(self) -> list[GraphMetadata]:
-        return [
-            _metadata_from_row(row)
-            for row in self._conn.execute(
-                "SELECT source, content_hash, model, created_at "
-                "FROM graph_metadata ORDER BY source"
-            )
-        ]
-
-    def transaction(self):
-        return transaction(self._conn)
-
-    def exists(self, source: str) -> bool:
-        row = self._conn.execute(
-            "SELECT EXISTS("
-            "SELECT 1 FROM graph_metadata WHERE source = ? LIMIT 1)",
-            (source,),
-        ).fetchone()
-        return bool(row[0])
-
-    def delete(self, source: str) -> None:
-        with transaction(self._conn):
-            self._conn.execute("DELETE FROM graph_nodes WHERE source = ?", (source,))
-            self._conn.execute("DELETE FROM graph_edges WHERE source = ?", (source,))
-            self._conn.execute(
-                "DELETE FROM graph_metadata WHERE source = ?",
-                (source,),
-            )
 
 
 class SqliteKnowledgeBaseStore:
@@ -186,14 +79,14 @@ class SqliteKnowledgeBaseStore:
             self._conn.execute(
                 "INSERT OR IGNORE INTO knowledge_base_state(singleton) VALUES (1)"
             )
-            _sync_keyed_payloads(
+            sync_keyed_payloads(
                 self._conn,
                 "knowledge_base_nodes",
                 "node_id",
                 node_rows,
             )
-            _sync_aliases(self._conn, alias_rows)
-            _sync_provenance(
+            sync_aliases(self._conn, alias_rows)
+            sync_provenance(
                 self._conn,
                 "knowledge_base_node_provenance",
                 (
@@ -204,8 +97,8 @@ class SqliteKnowledgeBaseStore:
                 ),
                 node_provenance_rows,
             )
-            _sync_edges(self._conn, edge_rows)
-            _sync_provenance(
+            sync_edges(self._conn, edge_rows)
+            sync_provenance(
                 self._conn,
                 "knowledge_base_edge_provenance",
                 (
@@ -403,7 +296,7 @@ class SqliteKnowledgeBaseStore:
                 "FROM knowledge_base_node_provenance"
             )
         }
-        node_provenance = _load_node_provenance(
+        node_provenance = load_node_provenance(
             self._conn,
             excluded_sources=sources,
         )
@@ -436,7 +329,7 @@ class SqliteKnowledgeBaseStore:
                 "FROM knowledge_base_edge_provenance"
             )
         }
-        edge_provenance = _load_edge_provenance(
+        edge_provenance = load_edge_provenance(
             self._conn,
             excluded_sources=sources,
         )
@@ -476,228 +369,7 @@ class SqliteKnowledgeBaseStore:
         ).fetchone()
         return bool(row[0])
 
-def _metadata_from_row(row: sqlite3.Row) -> GraphMetadata:
-    return GraphMetadata.model_validate(
-        {
-            "source": row["source"],
-            "content_hash": row["content_hash"],
-            "model": row["model"],
-            "created_at": row["created_at"],
-        }
-    )
-
-
-def _sync_source_payloads(
-    conn: sqlite3.Connection,
-    table: str,
-    id_column: str,
-    source: str,
-    rows: Iterable[tuple[str, str]],
-) -> None:
-    desired = dict(rows)
-    existing = {
-        row[id_column]: row["payload"]
-        for row in conn.execute(
-            f"SELECT {id_column}, payload FROM {table} WHERE source = ?",
-            (source,),
-        )
-    }
-    removed = set(existing) - set(desired)
-    conn.executemany(
-        f"DELETE FROM {table} WHERE source = ? AND {id_column} = ?",
-        [(source, item_id) for item_id in removed],
-    )
-    conn.executemany(
-        f"INSERT INTO {table} (source, {id_column}, payload) VALUES (?, ?, ?) "
-        f"ON CONFLICT(source, {id_column}) DO UPDATE SET payload = excluded.payload "
-        f"WHERE payload <> excluded.payload",
-        [
-            (source, item_id, payload)
-            for item_id, payload in desired.items()
-            if existing.get(item_id) != payload
-        ],
-    )
-
-
-def _sync_keyed_payloads(
-    conn: sqlite3.Connection,
-    table: str,
-    id_column: str,
-    desired: dict[str, str],
-) -> None:
-    existing = {
-        row[id_column]: row["payload"]
-        for row in conn.execute(f"SELECT {id_column}, payload FROM {table}")
-    }
-    conn.executemany(
-        f"DELETE FROM {table} WHERE {id_column} = ?",
-        [(item_id,) for item_id in set(existing) - set(desired)],
-    )
-    conn.executemany(
-        f"INSERT INTO {table} ({id_column}, payload) VALUES (?, ?) "
-        f"ON CONFLICT({id_column}) DO UPDATE SET payload = excluded.payload "
-        f"WHERE payload <> excluded.payload",
-        [
-            (item_id, payload)
-            for item_id, payload in desired.items()
-            if existing.get(item_id) != payload
-        ],
-    )
-
-
-def _sync_aliases(
-    conn: sqlite3.Connection,
-    desired: dict[tuple[str, str], str],
-) -> None:
-    existing = {
-        (row["node_id"], row["normalized_alias"]): row["alias"]
-        for row in conn.execute(
-            "SELECT node_id, normalized_alias, alias "
-            "FROM knowledge_base_node_aliases"
-        )
-    }
-    conn.executemany(
-        "DELETE FROM knowledge_base_node_aliases "
-        "WHERE node_id = ? AND normalized_alias = ?",
-        list(set(existing) - set(desired)),
-    )
-    conn.executemany(
-        "INSERT INTO knowledge_base_node_aliases "
-        "(node_id, normalized_alias, alias) VALUES (?, ?, ?) "
-        "ON CONFLICT(node_id, normalized_alias) DO UPDATE SET alias = excluded.alias "
-        "WHERE alias <> excluded.alias",
-        [
-            (node_id, normalized, alias)
-            for (node_id, normalized), alias in desired.items()
-            if existing.get((node_id, normalized)) != alias
-        ],
-    )
-
-
-def _sync_edges(
-    conn: sqlite3.Connection,
-    desired: dict[str, tuple[str, str, str]],
-) -> None:
-    existing = {
-        row["edge_id"]: (
-            row["source_node_id"],
-            row["target_node_id"],
-            row["payload"],
-        )
-        for row in conn.execute(
-            "SELECT edge_id, source_node_id, target_node_id, payload "
-            "FROM knowledge_base_edges"
-        )
-    }
-    conn.executemany(
-        "DELETE FROM knowledge_base_edges WHERE edge_id = ?",
-        [(edge_id,) for edge_id in set(existing) - set(desired)],
-    )
-    conn.executemany(
-        "INSERT INTO knowledge_base_edges "
-        "(edge_id, source_node_id, target_node_id, payload) VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(edge_id) DO UPDATE SET "
-        "source_node_id = excluded.source_node_id, "
-        "target_node_id = excluded.target_node_id, "
-        "payload = excluded.payload "
-        "WHERE source_node_id <> excluded.source_node_id "
-        "OR target_node_id <> excluded.target_node_id "
-        "OR payload <> excluded.payload",
-        [
-            (edge_id, source, target, payload)
-            for edge_id, (source, target, payload) in desired.items()
-            if existing.get(edge_id) != (source, target, payload)
-        ],
-    )
-
-
-def _sync_provenance(
-    conn: sqlite3.Connection,
-    table: str,
-    columns: tuple[str, str, str, str],
-    desired: dict[tuple[str, str, str, str], str],
-) -> None:
-    column_list = ", ".join(columns)
-    existing = {
-        tuple(row[column] for column in columns): row["payload"]
-        for row in conn.execute(f"SELECT {column_list}, payload FROM {table}")
-    }
-    where = " AND ".join(f"{column} = ?" for column in columns)
-    conn.executemany(
-        f"DELETE FROM {table} WHERE {where}",
-        list(set(existing) - set(desired)),
-    )
-    conflict = ", ".join(columns)
-    placeholders = ", ".join("?" for _ in range(5))
-    conn.executemany(
-        f"INSERT INTO {table} ({column_list}, payload) "
-        f"VALUES ({placeholders}) "
-        f"ON CONFLICT({conflict}) DO UPDATE SET payload = excluded.payload "
-        f"WHERE payload <> excluded.payload",
-        [
-            (*key, payload)
-            for key, payload in desired.items()
-            if existing.get(key) != payload
-        ],
-    )
-
-
-def _load_node_provenance(
-    conn: sqlite3.Connection,
-    node_id: str | None = None,
-    *,
-    excluded_sources: Sequence[str] = (),
-) -> dict[str, list[NodeProvenance]]:
-    query = (
-        "SELECT canonical_node_id, payload "
-        "FROM knowledge_base_node_provenance"
-    )
-    parameters: tuple[str, ...] = ()
-    if node_id is not None:
-        query += " WHERE canonical_node_id = ?"
-        parameters = (node_id,)
-    if excluded_sources:
-        conjunction = " AND " if parameters else " WHERE "
-        placeholders = ",".join("?" for _ in excluded_sources)
-        query += f"{conjunction}source NOT IN ({placeholders})"
-        parameters = (*parameters, *excluded_sources)
-    query += " ORDER BY rowid"
-    result: dict[str, list[NodeProvenance]] = {}
-    for row in conn.execute(query, parameters):
-        result.setdefault(row["canonical_node_id"], []).append(
-            NodeProvenance.model_validate_json(row["payload"])
-        )
-    return result
-
 
 def _batches(values: Sequence[str]) -> Iterable[tuple[str, ...]]:
     for start in range(0, len(values), _BATCH_SIZE):
         yield tuple(values[start : start + _BATCH_SIZE])
-
-
-def _load_edge_provenance(
-    conn: sqlite3.Connection,
-    edge_id: str | None = None,
-    *,
-    excluded_sources: Sequence[str] = (),
-) -> dict[str, list[EdgeProvenance]]:
-    query = (
-        "SELECT canonical_edge_id, payload "
-        "FROM knowledge_base_edge_provenance"
-    )
-    parameters: tuple[str, ...] = ()
-    if edge_id is not None:
-        query += " WHERE canonical_edge_id = ?"
-        parameters = (edge_id,)
-    if excluded_sources:
-        conjunction = " AND " if parameters else " WHERE "
-        placeholders = ",".join("?" for _ in excluded_sources)
-        query += f"{conjunction}source NOT IN ({placeholders})"
-        parameters = (*parameters, *excluded_sources)
-    query += " ORDER BY rowid"
-    result: dict[str, list[EdgeProvenance]] = {}
-    for row in conn.execute(query, parameters):
-        result.setdefault(row["canonical_edge_id"], []).append(
-            EdgeProvenance.model_validate_json(row["payload"])
-        )
-    return result

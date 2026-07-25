@@ -1,13 +1,14 @@
 from datetime import datetime, timezone
 
-from graphtool.graph.taxonomy import (
+from graphtool.graph.taxonomy import evolve_taxonomy, promote_suggestions
+from graphtool.graph.taxonomy_stores import (
     JsonNodeTypeRegistryStore,
     JsonTaxonomyPromotionAuditStore,
     SqliteTaxonomySuggestionStore,
+)
+from graphtool.graph.taxonomy_types import (
     TaxonomySuggestionRecord,
     default_node_type_registry,
-    evolve_taxonomy,
-    promote_suggestions,
 )
 from graphtool.graph.types import GraphMetadata, KnowledgeGraph, Node
 from graphtool.storage import open_database

@@ -6,11 +6,9 @@ from graphtool.graph.embedding_store import (
     SqliteEmbeddingStore,
     SqliteGraphEmbeddingStore,
 )
-from graphtool.graph.sqlite_store import (
-    SqliteGraphStore,
-    SqliteKnowledgeBaseStore,
-)
-from graphtool.graph.taxonomy import SqliteTaxonomySuggestionStore
+from graphtool.graph.document_store import SqliteGraphStore
+from graphtool.graph.knowledge_base_store import SqliteKnowledgeBaseStore
+from graphtool.graph.taxonomy_stores import SqliteTaxonomySuggestionStore
 from graphtool.retrieval.embedding_store import SqliteChunkEmbeddingStore
 from graphtool.storage import transaction
 

@@ -1,299 +1,25 @@
-import json
-import re
-import sqlite3
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
-
+from graphtool.graph.taxonomy_stores import (
+    JsonNodeTypeRegistryStore,
+    JsonTaxonomyPromotionAuditStore,
+    SqliteTaxonomySuggestionStore,
+)
+from graphtool.graph.taxonomy_types import (
+    DEFAULT_PROMOTION_MIN_NODES,
+    DEFAULT_PROMOTION_MIN_SOURCES,
+    UNCLASSIFIED_NODE_TYPE,
+    NodeTypeRegistry,
+    TaxonomyEvolutionResult,
+    TaxonomyPromotionRecord,
+    TaxonomySuggestionAggregate,
+    TaxonomySuggestionRecord,
+    normalize_type_name,
+)
 from graphtool.graph.types import KnowledgeGraph
-from graphtool.storage import as_connection, transaction
-
-UNCLASSIFIED_NODE_TYPE = "unclassified"
-
-CanonicalNodeType = Literal[
-    "concept",
-    "feature",
-    "capability",
-    "tool",
-    "integration",
-    "product",
-    "service",
-    "organization",
-    "person",
-    "document",
-    "repository",
-    "package",
-    "plugin",
-    "model",
-    "process",
-    "system",
-    "agent",
-    "environment",
-    "event_trigger",
-    "resource",
-    "unclassified",
-]
-
-CANONICAL_NODE_TYPES: tuple[str, ...] = (
-    "concept",
-    "feature",
-    "capability",
-    "tool",
-    "integration",
-    "product",
-    "service",
-    "organization",
-    "person",
-    "document",
-    "repository",
-    "package",
-    "plugin",
-    "model",
-    "process",
-    "system",
-    "agent",
-    "environment",
-    "event_trigger",
-    "resource",
-    "unclassified",
-)
-
-DEFAULT_TAXONOMY_VERSION = 1
-DEFAULT_PROMOTION_MIN_NODES = 5
-DEFAULT_PROMOTION_MIN_SOURCES = 2
-
-
-class TaxonomySuggestionStore(Protocol):
-    def append_many(self, records: Sequence["TaxonomySuggestionRecord"]) -> None:
-        ...
-
-
-class NodeTypeDefinition(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    description: str = ""
-
-
-class NodeTypeRegistry(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    version: int = DEFAULT_TAXONOMY_VERSION
-    types: dict[str, NodeTypeDefinition] = Field(
-        default_factory=lambda: {
-            type_name: NodeTypeDefinition()
-            for type_name in CANONICAL_NODE_TYPES
-        }
-    )
-
-    def with_promoted_types(
-        self,
-        promoted_types: Sequence[str],
-    ) -> "NodeTypeRegistry":
-        types = dict(self.types)
-        for type_name in promoted_types:
-            normalized = normalize_type_name(type_name)
-            if normalized in types:
-                continue
-            types[normalized] = NodeTypeDefinition(
-                description=f"Promoted from suggested type {normalized}."
-            )
-        return self.model_copy(update={"version": self.version + 1, "types": types})
-
-
-class TaxonomySuggestionRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    suggested_type: str
-    normalized_suggested_type: str
-    node_id: str
-    node_label: str
-    current_type: str
-    source: str
-    chunk_id: str
-    created_at: datetime
-
-
-class TaxonomySuggestionAggregate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    normalized_suggested_type: str
-    suggested_types: list[str]
-    node_count: int
-    source_count: int
-    node_ids: list[str]
-    sources: list[str]
-
-
-class TaxonomyPromotionRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    action: Literal["promote_type"] = "promote_type"
-    type: str
-    matched_suggestions: list[str]
-    affected_nodes: list[str]
-    reason: str
-    created_at: datetime
-
-
-class TaxonomyEvolutionResult(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    registry: NodeTypeRegistry
-    graphs: list[KnowledgeGraph]
-    promotions: list[TaxonomyPromotionRecord]
-
-
-class JsonNodeTypeRegistryStore:
-    def __init__(self, path: str | Path) -> None:
-        self._path = Path(path)
-
-    def save(self, registry: NodeTypeRegistry) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(registry.model_dump_json(indent=2))
-
-    def load(self) -> NodeTypeRegistry:
-        data = json.loads(self._path.read_text())
-        return NodeTypeRegistry.model_validate(data)
-
-    def load_or_default(self) -> NodeTypeRegistry:
-        if not self.exists():
-            return default_node_type_registry()
-        return self.load()
-
-    def exists(self) -> bool:
-        return self._path.exists()
-
-
-_INSERT_SUGGESTION_SQL = (
-    "INSERT INTO taxonomy_suggestions "
-    "(suggested_type, normalized_suggested_type, node_id, "
-    "node_label, current_type, source, chunk_id, created_at) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-)
-
-
-class SqliteTaxonomySuggestionStore:
-    def __init__(self, conn_or_path: sqlite3.Connection | str | Path) -> None:
-        self._conn = as_connection(conn_or_path)
-
-    def append_many(self, records: Sequence[TaxonomySuggestionRecord]) -> None:
-        if not records:
-            return
-        with transaction(self._conn):
-            self._conn.executemany(
-                _INSERT_SUGGESTION_SQL,
-                [self._row_tuple(record) for record in records],
-            )
-
-    def save(self, records: Sequence[TaxonomySuggestionRecord]) -> None:
-        with transaction(self._conn):
-            self._conn.execute("DELETE FROM taxonomy_suggestions")
-            self._conn.executemany(
-                _INSERT_SUGGESTION_SQL,
-                [self._row_tuple(record) for record in records],
-            )
-
-    def load(self) -> list[TaxonomySuggestionRecord]:
-        rows = self._conn.execute(
-            "SELECT suggested_type, normalized_suggested_type, node_id, "
-            "node_label, current_type, source, chunk_id, created_at "
-            "FROM taxonomy_suggestions ORDER BY rowid"
-        ).fetchall()
-        return [self._row_to_record(row) for row in rows]
-
-    def exists(self) -> bool:
-        row = self._conn.execute(
-            "SELECT EXISTS(SELECT 1 FROM taxonomy_suggestions LIMIT 1)"
-        ).fetchone()
-        return bool(row[0])
-
-    def replace_source(
-        self,
-        source: str,
-        records: Sequence[TaxonomySuggestionRecord],
-    ) -> None:
-        with transaction(self._conn):
-            self._conn.execute(
-                "DELETE FROM taxonomy_suggestions WHERE source = ?", (source,)
-            )
-            self._conn.executemany(
-                _INSERT_SUGGESTION_SQL,
-                [self._row_tuple(record) for record in records],
-            )
-
-    def delete_source(self, source: str) -> None:
-        with transaction(self._conn):
-            self._conn.execute(
-                "DELETE FROM taxonomy_suggestions WHERE source = ?", (source,)
-            )
-
-    @staticmethod
-    def _row_tuple(record: TaxonomySuggestionRecord) -> tuple:
-        return (
-            record.suggested_type,
-            record.normalized_suggested_type,
-            record.node_id,
-            record.node_label,
-            record.current_type,
-            record.source,
-            record.chunk_id,
-            record.created_at.isoformat(),
-        )
-
-    @staticmethod
-    def _row_to_record(row: sqlite3.Row) -> TaxonomySuggestionRecord:
-        return TaxonomySuggestionRecord(
-            suggested_type=row["suggested_type"],
-            normalized_suggested_type=row["normalized_suggested_type"],
-            node_id=row["node_id"],
-            node_label=row["node_label"],
-            current_type=row["current_type"],
-            source=row["source"],
-            chunk_id=row["chunk_id"],
-            created_at=row["created_at"],
-        )
-
-
-class JsonTaxonomyPromotionAuditStore:
-    def __init__(self, path: str | Path) -> None:
-        self._path = Path(path)
-
-    def append_many(self, records: Sequence[TaxonomyPromotionRecord]) -> None:
-        if not records:
-            return
-        existing = self.load()
-        self.save([*existing, *records])
-
-    def save(self, records: Sequence[TaxonomyPromotionRecord]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps(
-                [record.model_dump(mode="json") for record in records],
-                indent=2,
-                sort_keys=True,
-            )
-        )
-
-    def load(self) -> list[TaxonomyPromotionRecord]:
-        if not self.exists():
-            return []
-        data = json.loads(self._path.read_text())
-        return [TaxonomyPromotionRecord.model_validate(item) for item in data]
-
-    def exists(self) -> bool:
-        return self._path.exists()
-
-
-def default_node_type_registry() -> NodeTypeRegistry:
-    return NodeTypeRegistry()
-
-
-def canonical_node_type_text() -> str:
-    return ", ".join(CANONICAL_NODE_TYPES)
+from graphtool.sequences import unique_ordered
 
 
 def make_taxonomy_suggestion_records(
@@ -336,18 +62,20 @@ def aggregate_suggestions(
 
     aggregates = []
     for normalized, group in sorted(grouped.items()):
-        node_keys = _unique(
+        node_keys = unique_ordered(
             _node_key(record.source, record.node_id)
             for record in group
         )
         aggregates.append(
             TaxonomySuggestionAggregate(
                 normalized_suggested_type=normalized,
-                suggested_types=_unique(record.suggested_type for record in group),
+                suggested_types=unique_ordered(
+                    record.suggested_type for record in group
+                ),
                 node_count=len(node_keys),
                 source_count=len({record.source for record in group}),
                 node_ids=node_keys,
-                sources=_unique(record.source for record in group),
+                sources=unique_ordered(record.source for record in group),
             )
         )
     return aggregates
@@ -464,11 +192,6 @@ def migrate_promoted_types(
     return graph.model_copy(update={"nodes": nodes})
 
 
-def normalize_type_name(value: str) -> str:
-    normalized = re.sub(r"[^a-z0-9]+", "_", value.casefold())
-    return "_".join(part for part in normalized.split("_") if part)
-
-
 def _affected_nodes_by_type(
     original_graphs: Sequence[KnowledgeGraph],
     migrated_graphs: Sequence[KnowledgeGraph],
@@ -492,21 +215,10 @@ def _affected_nodes_by_type(
                     else migrated_node.id
                 )
     return {
-        type_name: _unique(nodes)
+        type_name: unique_ordered(nodes)
         for type_name, nodes in affected.items()
     }
 
 
 def _node_key(source: str, node_id: str) -> str:
     return f"{source}:{node_id}"
-
-
-def _unique(values: Iterable[str]) -> list[str]:
-    seen = set()
-    unique = []
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        unique.append(value)
-    return unique

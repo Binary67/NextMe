@@ -13,7 +13,7 @@ from graphtool.graph.embedding_store import (
 from graphtool.graph.extraction_store import JsonChunkExtractionStore
 from graphtool.graph.combiner import combine_knowledge_graphs
 from graphtool.graph.generator import generate_knowledge_graph
-from graphtool.graph.sqlite_store import (
+from graphtool.graph.knowledge_base_store import (
     KnowledgeBaseDelta,
 )
 from graphtool.graph.resolution_embeddings import EmbeddingStore
@@ -21,7 +21,7 @@ from graphtool.graph.resolver import (
     DEFAULT_MIN_CANDIDATE_SIMILARITY,
     SemanticEntityResolver,
 )
-from graphtool.graph.taxonomy import (
+from graphtool.graph.taxonomy_types import (
     TaxonomySuggestionRecord,
 )
 from graphtool.graph.types import KnowledgeGraph

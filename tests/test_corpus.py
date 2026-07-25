@@ -18,7 +18,7 @@ from graphtool.graph.extraction_store import (
     ExtractedNode as _ExtractedNode,
 )
 from graphtool.graph.resolver import EntityResolutionDecision, SemanticEntityResolver
-from graphtool.graph.taxonomy import (
+from graphtool.graph.taxonomy_types import (
     TaxonomySuggestionRecord,
 )
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
