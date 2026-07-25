@@ -5,7 +5,7 @@ from pathlib import Path
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
-PDF_BATCH_MAX_PAGES = 2
+PDF_BATCH_MAX_PAGES = 8
 PDF_BATCH_MAX_EXTRACTED_CHARS = 16_000
 PDF_RENDER_DPI = 150
 

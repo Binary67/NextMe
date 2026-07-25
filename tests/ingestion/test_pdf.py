@@ -63,6 +63,7 @@ def test_convert_pdf_batches_pages_and_assembles_canonical_markdown(
     monkeypatch,
     tmp_path,
 ):
+    monkeypatch.setattr(pdf_pages, "PDF_BATCH_MAX_PAGES", 2)
     original_assemble_markdown = pdf_conversion.assemble_markdown
     assembled_page_counts = []
 
@@ -207,6 +208,7 @@ def test_convert_pdf_uses_complete_cache_without_rendering_or_llm(
 
 
 def test_convert_pdf_resumes_validated_batches_after_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(pdf_pages, "PDF_BATCH_MAX_PAGES", 2)
     render_calls = _prepare(monkeypatch, ["One", "Two", "Three"])
     path = tmp_path / "manual.pdf"
     path.write_bytes(b"pdf")
@@ -564,14 +566,15 @@ def test_completed_cache_manifest_records_fast_model_and_markdown_hash(
 
 
 def test_make_page_batches_respects_page_and_extracted_text_limits():
-    page_texts = ["a", "b", "x" * 16_000, "c"]
+    page_texts = ["a"] * 9 + ["x" * 16_000, "c"]
 
     batches = pdf_pages.make_page_batches(page_texts)
 
     assert [[page_number for page_number, _ in batch] for batch in batches] == [
-        [1, 2],
-        [3],
-        [4],
+        list(range(1, 9)),
+        [9],
+        [10],
+        [11],
     ]
 
 
