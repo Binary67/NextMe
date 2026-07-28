@@ -42,6 +42,27 @@ class FakeOpenAI:
         FakeOpenAI.instances.append(self)
 
 
+class FakeAzureOpenAI:
+    instances = []
+
+    def __init__(
+        self,
+        *,
+        azure_endpoint,
+        api_key,
+        api_version,
+        timeout,
+        max_retries,
+    ):
+        self.azure_endpoint = azure_endpoint
+        self.api_key = api_key
+        self.api_version = api_version
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.audio = FakeAudio()
+        FakeAzureOpenAI.instances.append(self)
+
+
 class FakeTextResponse:
     output_text = "hello"
     id = "response-123"
@@ -173,8 +194,11 @@ def test_constructs_fast_agent_model_with_fast_deployment(monkeypatch):
 
 
 def test_transcribes_audio_with_dedicated_deployment(monkeypatch, tmp_path):
-    FakeOpenAI.instances = []
-    monkeypatch.setattr("graphtool.llm.azure_openai.OpenAI", FakeOpenAI)
+    FakeAzureOpenAI.instances = []
+    monkeypatch.setattr(
+        "graphtool.llm.azure_openai.AzureOpenAI",
+        FakeAzureOpenAI,
+    )
     path = tmp_path / "chunk.mp3"
     path.write_bytes(b"audio")
 
@@ -183,7 +207,9 @@ def test_transcribes_audio_with_dedicated_deployment(monkeypatch, tmp_path):
 
     assert transcriber.transcription_model == "transcription-deployment"
     assert transcript == "transcribed audio"
-    client = FakeOpenAI.instances[0]
+    client = FakeAzureOpenAI.instances[0]
+    assert client.azure_endpoint == "https://example.openai.azure.com"
+    assert client.api_version == "2024-10-21"
     assert client.timeout == AUDIO_TRANSCRIPTION_REQUEST_TIMEOUT_SECONDS
     assert client.max_retries == AUDIO_TRANSCRIPTION_MAX_RETRIES
     call = client.audio.transcriptions.create_calls[0]

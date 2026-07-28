@@ -5,7 +5,7 @@ from typing import Any, TypeVar
 
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
-from openai import OpenAI
+from openai import AzureOpenAI, OpenAI
 
 from graphtool.llm.config import AzureOpenAIConfig
 from graphtool.llm.types import (
@@ -75,9 +75,11 @@ class AzureOpenAIClient:
 class AzureOpenAIAudioTranscriber:
     def __init__(self, config: AzureOpenAIConfig) -> None:
         self._deployment = config.transcription_deployment
-        self._client = OpenAI(
-            base_url=config.endpoint,
+        resource_endpoint = config.endpoint.removesuffix("/openai/v1/")
+        self._client = AzureOpenAI(
+            azure_endpoint=resource_endpoint,
             api_key=config.api_key,
+            api_version="2024-10-21",
             timeout=AUDIO_TRANSCRIPTION_REQUEST_TIMEOUT_SECONDS,
             max_retries=AUDIO_TRANSCRIPTION_MAX_RETRIES,
         )
